@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "ob_temp_block_store.h"
 
 

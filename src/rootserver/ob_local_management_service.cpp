@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX RS
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "share/config/ob_config_helper.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "ob_local_management_service.h"

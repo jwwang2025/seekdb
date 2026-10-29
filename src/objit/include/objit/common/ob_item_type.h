@@ -1391,6 +1391,7 @@ typedef enum ObItemType
   T_FILE_ID = 3795,
   T_SET_NAMES = 3798,
   T_SET_CHARSET = 3799,
+  T_CLEAR_LOCATION_CACHE = 3800,
   T_EMPTY = 3802,
   T_CONCAT_STRING = 3803,
   T_FOUND_ROWS = 3804,
@@ -2273,6 +2274,9 @@ typedef enum ObItemType
   T_FORK_DATABASE = 4917,
   T_DIFF_TABLE = 4918,
   T_MERGE_TABLE = 4919,
+  T_FILE_TABLE_EXPRESSION = 4921,
+  T_COPY = 4922,
+  T_DESCRIBE = 4923,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

@@ -15,7 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "sql/ob_sql.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -28,6 +28,7 @@
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
 #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
+#include "sql/resolver/ddl/ob_explain_stmt.h"
 #include "sql/privilege_check/ob_privilege_check.h"
 #include "sql/rewrite/ob_transformer_impl.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
@@ -270,19 +271,43 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       break;
     }
     case stmt::T_EXPLAIN: {
-      ObString tname = ObString::make_string("explain_table");
-      ObString cname = ObString::make_string("Query Plan");
-      field.tname_ = tname;
-      field.org_tname_ = tname;
-      field.cname_ = cname;
-      field.org_cname_ = cname;
-      field.type_.set_type(ObVarcharType);
-      field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
-      field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
-      field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
-      field.type_.set_varchar(type_name);
-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
-      } else if (OB_FAIL(result_set.add_field_column(field))) {
+      if (static_cast<ObExplainStmt&>(basic_stmt).is_describe()) {
+        static const char *const describe_field_names[] = {
+            "column_name", "column_type", "null", "key", "default", "extra"};
+        const int64_t describe_field_cnt = static_cast<int64_t>(ARRAYSIZEOF(describe_field_names));
+        if (OB_FAIL(result_set.reserve_field_columns(describe_field_cnt))) {
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < describe_field_cnt; ++i) {
+          ObField desc_field;
+          ObString desc_tname = ObString::make_string("describe_table");
+          ObString desc_cname = ObString::make_string(describe_field_names[i]);
+          desc_field.tname_ = desc_tname;
+          desc_field.org_tname_ = desc_tname;
+          desc_field.cname_ = desc_cname;
+          desc_field.org_cname_ = desc_cname;
+          desc_field.type_.set_type(ObVarcharType);
+          desc_field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+          desc_field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+          desc_field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+          desc_field.type_.set_varchar(type_name);
+          if (OB_FAIL(result_set.add_field_column(desc_field))) {
+          }
+        }
+      } else {
+        ObString tname = ObString::make_string("explain_table");
+        ObString cname = ObString::make_string("Query Plan");
+        field.tname_ = tname;
+        field.org_tname_ = tname;
+        field.cname_ = cname;
+        field.org_cname_ = cname;
+        field.type_.set_type(ObVarcharType);
+        field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+        field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+        field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+        field.type_.set_varchar(type_name);
+        if (OB_FAIL(result_set.reserve_field_columns(1))) {
+        } else if (OB_FAIL(result_set.add_field_column(field))) {
+        }
       }
       break;
     }
@@ -2767,7 +2792,7 @@ int ObSql::code_generate(
   }
   NG_TRACE(cg_end);
 
-  // set tablet accesses in the execution context, query_timeout in exec_context
+  // set phy table location in task_exec_ctx, query_timeout in exec_context
   if (OB_SUCC(ret)) {
     const ObPlanCachePolicy plan_cache_policy = phy_plan->get_phy_plan_hint().plan_cache_policy_;
     ObPhyPlanHint phy_hint(logical_plan->get_optimizer_context().get_global_hint());
@@ -2796,11 +2821,11 @@ int ObSql::code_generate(
       } else {
         ObDASCtx &das_ctx = DAS_CTX(result.get_exec_context());
         for (int64_t i = 0; OB_SUCC(ret) && i < tbl_part_infos.count(); i++) {
-          TableAccessPlan &tl = tbl_part_infos.at(i)->get_table_access_plan();
+          ObTableLocation &tl = tbl_part_infos.at(i)->get_table_location();
           if (!tl.use_das()) {
-            const TableAccessTargets &table_targets = tbl_part_infos.at(i)->get_access_targets();
-            if (OB_FAIL(das_ctx.add_table_access_targets(tl.get_access_meta(), table_targets))) {
-            } else if (OB_UNLIKELY(das_ctx.get_table_accesses().empty())) {
+            const ObCandiTableLoc &candi_table_loc = tbl_part_infos.at(i)->get_phy_tbl_location_info();
+            if (OB_FAIL(das_ctx.add_candi_table_loc(tl.get_loc_meta(), candi_table_loc))) {
+            } else if (OB_UNLIKELY(das_ctx.get_table_loc_list().empty())) {
               ret = OB_ERR_UNEXPECTED;
             }
           }
@@ -2811,15 +2836,15 @@ int ObSql::code_generate(
     if (OB_SUCC(ret)) {
       bool skip_non_partition_optimized = false;
       for (int64_t i = 0; OB_SUCC(ret) && i < tbl_part_infos.count(); i++) {
-        TableAccessPlan &tl = tbl_part_infos.at(i)->get_table_access_plan();
-        if (tl.is_partitioned() || is_virtual_table(tl.get_access_meta().ref_table_id_)) {
+        ObTableLocation &tl = tbl_part_infos.at(i)->get_table_location();
+        if (tl.is_partitioned() || is_virtual_table(tl.get_loc_meta().ref_table_id_)) {
           skip_non_partition_optimized = true;
           break;
         }
       }
       if (OB_SUCC(ret) && !skip_non_partition_optimized) {
         for (int64_t i = 0; OB_SUCC(ret) && i < tbl_part_infos.count(); i++) {
-          TableAccessPlan &tl = tbl_part_infos.at(i)->get_table_access_plan();
+          ObTableLocation &tl = tbl_part_infos.at(i)->get_table_location();
           if (OB_FAIL(tl.calc_not_partitioned_table_ids(result.get_exec_context()))) {
           } else {
             tl.set_is_non_partition_optimized(true);
@@ -2827,9 +2852,9 @@ int ObSql::code_generate(
         }
       }
     }
-    // set table access plans for the physical plan
+    // set table location for phy_plan
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(phy_plan->set_table_access_plans(tbl_part_infos, *sql_ctx.schema_guard_))) {
+      if (OB_FAIL(phy_plan->set_table_locations(tbl_part_infos, *sql_ctx.schema_guard_))) {
       }
     }
   }

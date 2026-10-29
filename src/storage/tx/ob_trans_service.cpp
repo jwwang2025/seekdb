@@ -15,7 +15,7 @@
  */
 
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "ob_trans_service.h"
 #include "ob_ts_mgr.h"
 #include "share/rc/ob_server_runtime.h"
