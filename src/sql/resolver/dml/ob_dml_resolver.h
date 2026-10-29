@@ -365,6 +365,8 @@ protected:
                                 bool include_hidden,
                                 ColumnItem *&col_item,
                                 ObDMLStmt *stmt = NULL);
+  int check_ai_column_strict_read(const share::schema::ObTableSchema &table_schema,
+                                  const share::schema::ObColumnSchemaV2 &ai_column);
   int adjust_values_desc_position(ObInsertTableInfo& table_info,
                                   ObIArray<int64_t> &value_idxs);
 public:
@@ -865,7 +867,7 @@ protected:
    * For example:
    * with cte (select * from t1) select 1 from dual;
    * If added, the above statement will enter trans_service, and an error will be reported later because it actually detects that the related table's
-   * partition target set is empty.
+   * partition location is empty.
    * */
   bool with_clause_without_record_;
   bool is_prepare_stage_;

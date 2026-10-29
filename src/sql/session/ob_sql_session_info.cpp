@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_SESSION
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include <new>
 #include "data_plane/ob_iter_cache_api.h"
 #include "data_plane/ob_tx_ctx_cache_api.h"
@@ -129,6 +129,7 @@ ObSQLSessionInfo::ObSQLSessionInfo() :
       read_uncommited_(false),
       trace_recorder_(NULL),
       inner_flag_(false),
+      ai_column_strict_read_(false),
       is_max_availability_mode_(false),
       next_client_ps_stmt_id_(0),
       session_type_(INVALID_TYPE),
@@ -267,6 +268,7 @@ void ObSQLSessionInfo::reset(bool skip_sys_var)
     read_uncommited_ = false;
     trace_recorder_ = NULL;
     inner_flag_ = false;
+    ai_column_strict_read_ = false;
     is_max_availability_mode_ = false;
     ps_session_info_map_.reuse();
     ps_name_id_map_.reuse();
@@ -706,9 +708,9 @@ void ObSQLSessionInfo::update_show_warnings_buf()
   for (int64_t i = 0; i < warnings_buf_.get_readable_warning_count(); i++) {
     const ObWarningBuffer::WarningItem *item = warnings_buf_.get_warning_item(i);
     if (OB_ISNULL(item)) {
-    } else if (item->log_level_ == common::USER_WARN) {
+    } else if (item->log_level_ == common::ObLogger::UserMsgLevel::USER_WARN) {
       show_warnings_buf_.append_warning(item->msg_, item->code_);
-    } else if (item->log_level_ == common::USER_NOTE) {
+    } else if (item->log_level_ == common::ObLogger::UserMsgLevel::USER_NOTE) {
       show_warnings_buf_.append_note(item->msg_, item->code_);
     }
   }

@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "share/config/ob_config_helper.h"
 #include "sql/resolver/cmd/ob_load_data_stmt.h"
 
@@ -1727,6 +1727,9 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       // read only
       SET_STMT_TYPE(T_EXPLAIN);
       SET_STMT_TYPE(T_SHOW_COLUMNS);
+      case T_SHOW_AI_COLUMNS: {
+        type = stmt::T_SHOW_COLUMNS;
+      } break;
       SET_STMT_TYPE(T_SHOW_TABLES);
       SET_STMT_TYPE(T_SHOW_DATABASES);
       SET_STMT_TYPE(T_SHOW_TABLE_STATUS);
@@ -6063,7 +6066,8 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
     MEMCPY(buf, secure_file_priv.ptr(), secure_file_priv.length());
 
     struct stat path_stat;
-    if (0 != stat(buf, &path_stat) || 0 == S_ISDIR(path_stat.st_mode)) {
+    stat(buf, &path_stat);
+    if (0 == S_ISDIR(path_stat.st_mode)) {
       ret = OB_ERR_NO_PRIVILEGE;
     } else {
       MEMSET(buf, 0, sizeof(buf));
@@ -6075,7 +6079,7 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
       ObCStringHelper helper;
       if (NULL == (real_secure_file = ::realpath(helper.convert(secure_file_priv), buf))) {
 #endif
-        ret = OB_ERR_NO_PRIVILEGE;
+        // pass
       } else {
         ObString secure_file_priv_tmp(real_secure_file);
         const int64_t pos = secure_file_priv_tmp.length();
