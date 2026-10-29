@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_EXE
 
-#include "rust/config.h"
+#include "config_bridge.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "ob_cmd_executor.h"
 #include "query/ddl/ob_ddl_execution_guard.h"
