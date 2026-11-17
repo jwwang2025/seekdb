@@ -193,7 +193,7 @@ private:
       const unsigned char *ustart = reinterpret_cast<const unsigned char *>(input);
       const unsigned char *uend = reinterpret_cast<const unsigned char *>(&input[char_len]);
       int code_size = common::ob_charset_decode_unicode<CS_TYPE>(ustart, uend, unicode);
-      if (code_size < 0) {
+      if (code_size <= 0) {
         ret = OB_UNEXPECT_INTERNAL_ERROR;
         STORAGE_FTS_LOG(WARN, "Failed to decode unicode", K(code_size), K(ret));
       }
@@ -494,7 +494,7 @@ inline int ObFTCharUtil::do_classify_with_len(const char *input,
     const unsigned char *ustart = reinterpret_cast<const unsigned char *>(input);
     const unsigned char *uend = reinterpret_cast<const unsigned char *>(input + buf_size);
     const int code_size = common::ob_charset_decode_unicode<CS_TYPE>(ustart, uend, unicode);
-    if (code_size < 0) {
+    if (code_size <= 0) {
       ret = OB_INVALID_ARGUMENT;
     } else {
       char_len = code_size;

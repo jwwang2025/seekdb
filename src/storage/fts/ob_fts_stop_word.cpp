@@ -176,9 +176,13 @@ int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
     ret = OB_INVALID_ARGUMENT;
   } else if (flag_.casedown()) {
     const ObString &src_str = src.get_word().get_string();
-    bool ascii_only = true;
+    // Byte-wise ASCII case folding is valid for these UTF-8 collations.
+    // Other encodings may have ASCII-range bytes inside a multibyte character.
+    const auto collation = word_meta_.get_collation_type();
+    bool ascii_only = collation == ObCollationType::CS_TYPE_UTF8MB4_GENERAL_CI
+                      || collation == ObCollationType::CS_TYPE_UTF8MB4_BIN;
     bool need_lower = false;
-    for (int64_t i = 0; i < src_str.length(); ++i) {
+    for (int64_t i = 0; ascii_only && i < src_str.length(); ++i) {
       const unsigned char c = static_cast<unsigned char>(src_str.ptr()[i]);
       if (c >= 0x80) {
         ascii_only = false;
