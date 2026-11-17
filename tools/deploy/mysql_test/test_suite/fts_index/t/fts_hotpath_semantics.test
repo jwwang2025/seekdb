@@ -1,0 +1,15 @@
+# Default-property fast path and collation-aware in-place aggregation.
+connection default;
+--disable_query_log
+set names utf8mb4;
+select cast(tokenize('Database database cafe café', 'space', '[{"output":"all"}]') as char) = cast(tokenize('Database database cafe café', 'space', '[{"output":"all"},{"additional_args":[{"min_token_size":3},{"max_token_size":84}]}]') as char) as space_defaults_equal;
+select cast(tokenize('Database databases performance audit', 'beng', '[{"output":"all"}]') as char) = cast(tokenize('Database databases performance audit', 'beng', '[{"output":"all"},{"additional_args":[{"min_token_size":3},{"max_token_size":84}]}]') as char) as beng_defaults_equal;
+select cast(tokenize('全文索引 database', 'ngram', '[{"output":"all"}]') as char) = cast(tokenize('全文索引 database', 'ngram', '[{"output":"all"},{"additional_args":[{"ngram_token_size":2}]}]') as char) as ngram_defaults_equal;
+select cast(tokenize('全文索引 database', 'ngram2', '[{"output":"all"}]') as char) = cast(tokenize('全文索引 database', 'ngram2', '[{"output":"all"},{"additional_args":[{"min_ngram_size":2},{"max_ngram_size":3}]}]') as char) as ngram2_defaults_equal;
+select cast(tokenize('全文索引 分词器 OceanBase 数据库', 'ik', '[{"output":"all"}]') as char) = cast(tokenize('全文索引 分词器 OceanBase 数据库', 'ik', '[{"output":"all"},{"additional_args":[{"ik_mode":"smart"}]}]') as char) as ik_defaults_equal;
+select json_contains(tokenize(_utf8mb4'café cafe CAFÉ' collate utf8mb4_general_ci, 'space', '[{"output":"all"}]'), '{"doc_len":3,"tokens":[{"café":3}]}') as latest_spelling_preserved;
+select json_contains(tokenize(_utf8mb4'cafe café CAFE' collate utf8mb4_general_ci, 'space', '[{"output":"all"}]'), '{"doc_len":3,"tokens":[{"cafe":3}]}') as reverse_spelling_preserved;
+select json_contains(tokenize(_utf8mb4'café cafe' collate utf8mb4_bin, 'space', '[{"output":"all"}]'), '{"doc_len":2,"tokens":[{"café":1},{"cafe":1}]}') as binary_accents_distinct;
+select json_contains(tokenize('zx zx long', 'space', '[{"output":"all"},{"additional_args":[{"min_token_size":2},{"max_token_size":10}]}]'), '{"doc_len":3,"tokens":[{"zx":2},{"long":1}]}') as custom_limits_preserved;
+select cast(tokenize('', 'space') as char) = cast(tokenize('', 'space', '[{"additional_args":[{"min_token_size":3},{"max_token_size":84}]}]') as char) as empty_defaults_equal;
+--enable_query_log
