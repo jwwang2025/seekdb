@@ -70,6 +70,7 @@ struct ObFileTableDef
       is_glob_(false) {}
   ObFileSqlFormat format_;
   common::ObString path_;
+  common::ObString scan_descriptor_;
   int64_t column_cnt_;
   int64_t row_cnt_;
   bool is_glob_;

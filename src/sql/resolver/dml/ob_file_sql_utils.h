@@ -31,9 +31,10 @@ namespace sql
 // buffer that read_file() allocated from the statement allocator.
 struct ObFileSqlCell
 {
-  ObFileSqlCell() : text_(), is_null_(false) {}
+  ObFileSqlCell() : text_(), is_null_(false), is_json_string_(false) {}
   common::ObString text_;
   bool is_null_;
+  bool is_json_string_;
 };
 
 // Options that can be passed to the read_xxx() table functions.
@@ -111,15 +112,29 @@ private:
   int infer_column_types(ObFileTableDef &def, common::ObIArray<ObFileSqlCell> &cells);
   // JSON numbers keep their own type, so the candidates differ from CSV.
   int infer_json_column_types(ObFileTableDef &def, common::ObIArray<ObFileSqlCell> &cells);
-  // Decodes the common JSON escapes into out (out must have 4 bytes).
-  static int json_unescape(const char esc, char *out, int64_t &out_len);
-
   int alloc_copy_string(const common::ObString &src, common::ObString &dst);
   int dedup_column_names(ObFileTableDef &def);
 
 private:
   common::ObIAllocator &allocator_;
   DISALLOW_COPY_AND_ASSIGN(ObFileSqlReader);
+};
+
+class ObFileSqlStream
+{
+public:
+  ObFileSqlStream();
+  ~ObFileSqlStream();
+  int describe(common::ObIAllocator &alloc, const common::ObString &path, ObFileSqlFormat format,
+               const ObFileSqlOptions &options, ObFileTableDef &def);
+  int start(const common::ObString &descriptor);
+  void select_column(int64_t index, bool selected);
+  int next();
+  int cell(int64_t index, ObFileSqlType &type, ObFileSqlCell &value);
+private:
+  struct State;
+  State *state_;
+  DISALLOW_COPY_AND_ASSIGN(ObFileSqlStream);
 };
 
 // Text based type inference helpers, shared by the CSV and JSONL readers.

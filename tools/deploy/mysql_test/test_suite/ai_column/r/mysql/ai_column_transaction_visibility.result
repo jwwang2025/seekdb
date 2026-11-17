@@ -1,0 +1,9 @@
+pending_result
+1
+ERROR HY000: AI column has unfinished tasks for table_id=<table_id>, column_id=<column_id>
+own_task_visible
+1
+rollback_removes_row
+1
+rollback_removes_task
+1

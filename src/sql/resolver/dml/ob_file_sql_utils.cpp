@@ -17,7 +17,11 @@
 #define USING_LOG_PREFIX SQL_RESV
 
 #include "sql/resolver/dml/ob_file_sql_utils.h"
+#include "sql/resolver/dml/ob_file_sql_json_row.h"
 
+#include <rapidjson/document.h>
+#include <rapidjson/writer.h>
+#include <rapidjson/stringbuffer.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -357,27 +361,6 @@ double ObFileSqlValueType::parse_double_text(const char *ptr, const int64_t len)
     v = 0.0;
   }
   return v;
-}
-
-int ObFileSqlReader::json_unescape(const char esc, char *out, int64_t &out_len)
-{
-  int ret = OB_SUCCESS;
-  out_len = 1;
-  switch (esc) {
-    case '"': out[0] = '"'; break;
-    case '\\': out[0] = '\\'; break;
-    case '/': out[0] = '/'; break;
-    case 'b': out[0] = '\b'; break;
-    case 'f': out[0] = '\f'; break;
-    case 'n': out[0] = '\n'; break;
-    case 'r': out[0] = '\r'; break;
-    case 't': out[0] = '\t'; break;
-    default:
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("unsupported json escape", K(ret), K(esc));
-      break;
-  }
-  return ret;
 }
 
 int ObFileSqlReader::detect_format_by_extension(const ObString &path,
@@ -765,150 +748,27 @@ int ObFileSqlReader::parse_jsonl(char *buf,
     if (begin == end) {
       continue;
     }
-    std::vector<std::pair<std::string, std::string> > members;
-    std::vector<bool> member_is_null;
-    int64_t i = begin;
-    if ('{' != buf[i]) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("the line of the jsonl file is not an object", K(ret), K(row_no), K(def.path_));
-      break;
+    file_json::FlatObject row_parser(OB_FILE_MAX_COLUMN_CNT);
+    if (!row_parser.parse(buf + begin, end - begin)) {
+      ret = row_parser.nested_ ? OB_NOT_SUPPORTED : OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid flat JSON object", K(ret), K(row_no), K(def.path_));
     }
-    ++i;
-    bool obj_done = false;
-    while (!obj_done && OB_SUCC(ret)) {
-      while (i < end && (' ' == buf[i] || '\t' == buf[i])) {
-        ++i;
-      }
-      if (i < end && '}' == buf[i]) {
-        ++i;
-        obj_done = true;
-        break;
-      }
-      if (i >= end || '"' != buf[i]) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("expect a key of the json object", K(ret), K(row_no), K(def.path_));
-        break;
-      }
-      std::string key;
-      ++i;
-      bool key_done = false;
-      while (i < end && !key_done) {
-        if ('"' == buf[i]) {
-          key_done = true;
-          ++i;
-        } else if ('\\' == buf[i] && i + 1 < end) {
-          key.push_back(buf[i]);
-          key.push_back(buf[i + 1]);
-          i += 2;
-        } else {
-          key.push_back(buf[i]);
-          ++i;
-        }
-      }
-      if (!key_done) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("unterminated key", K(ret), K(row_no));
-      }
-      while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
-        ++i;
-      }
-      if (OB_FAIL(ret)) {
-        break;
-      } else if (i >= end || ':' != buf[i]) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("expect ':' after the key", K(ret), K(row_no));
-        break;
-      }
-      ++i;
-      while (i < end && (' ' == buf[i] || '\t' == buf[i])) {
-        ++i;
-      }
-      std::string value;
-      bool value_is_null = false;
-      if (i >= end) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("missing value", K(ret), K(row_no));
-      } else if ('"' == buf[i]) {
-        ++i;
-        bool value_done = false;
-        while (i < end && !value_done && OB_SUCC(ret)) {
-          if ('"' == buf[i]) {
-            value_done = true;
-            ++i;
-          } else if ('\\' == buf[i] && i + 1 < end) {
-            char out[4];
-            int64_t out_len = 0;
-            if (OB_FAIL(json_unescape(buf[i + 1], out, out_len))) {
-              LOG_WARN("unescape json string failed", K(ret), K(row_no));
-            } else {
-              value.append(out, out_len);
-              i += 2;
-            }
-          } else {
-            value.push_back(buf[i]);
-            ++i;
-          }
-        }
-        if (!value_done && OB_SUCC(ret)) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("unterminated string value", K(ret), K(row_no));
-        }
-      } else if ('{' == buf[i] || '[' == buf[i]) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("nested json value is not supported", K(ret), K(row_no), K(def.path_));
-      } else {
-        const int64_t value_begin = i;
-        while (i < end && ',' != buf[i] && '}' != buf[i] && ' ' != buf[i]) {
-          ++i;
-        }
-        if (i == value_begin) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("empty value", K(ret), K(row_no));
-        } else {
-          value.assign(buf + value_begin, i - value_begin);
-          if ("null" == value) {
-            value_is_null = true;
-            value.clear();
-          }
-        }
-      }
-      if (OB_SUCC(ret)) {
-        members.push_back(std::make_pair(key, value));
-        member_is_null.push_back(value_is_null);
-      }
-      while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
-        ++i;
-      }
-      if (OB_FAIL(ret)) {
-        break;
-      } else if (i < end && ',' == buf[i]) {
-        ++i;
-      } else if (i < end && '}' == buf[i]) {
-        ++i;
-        obj_done = true;
-      } else {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("expect ',' or '}' in the json object", K(ret), K(row_no));
-      }
-    }
-    while (OB_SUCC(ret) && i < end && (' ' == buf[i] || '\t' == buf[i])) {
-      ++i;
-    }
-    if (OB_SUCC(ret) && i != end) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("unexpected trailing characters", K(ret), K(row_no), K(def.path_));
-    }
+    const auto &members = row_parser.members_;
     if (OB_SUCC(ret)) {
-      for (int64_t m = 0; m < static_cast<int64_t>(members.size()); ++m) {
-        if (std::find(column_names.begin(), column_names.end(), members.at(m).first)
+      for (int64_t m = 0; OB_SUCC(ret) && m < static_cast<int64_t>(members.size()); ++m) {
+        if (std::find(column_names.begin(), column_names.end(), members.at(m).key)
             == column_names.end()) {
-          column_names.push_back(members.at(m).first);
+          if (column_names.size() >= OB_FILE_MAX_COLUMN_CNT) {
+            ret = OB_INVALID_ARGUMENT;
+          } else {
+            column_names.push_back(members.at(m).key);
+          }
         }
       }
       std::vector<ObFileSqlCell> row;
       for (int64_t m = 0; OB_SUCC(ret) && m < static_cast<int64_t>(members.size()); ++m) {
         const int64_t idx = std::find(column_names.begin(), column_names.end(),
-                                      members.at(m).first) - column_names.begin();
+                                      members.at(m).key) - column_names.begin();
         if (idx >= static_cast<int64_t>(row.size())) {
           const int64_t old_size = static_cast<int64_t>(row.size());
           row.resize(idx + 1);
@@ -917,13 +777,14 @@ int ObFileSqlReader::parse_jsonl(char *buf,
           }
         }
         ObFileSqlCell &cell = row.at(idx);
-        if (member_is_null.at(m)) {
+        cell.is_json_string_ = members.at(m).kind == file_json::Kind::String;
+        if (members.at(m).kind == file_json::Kind::Null) {
           cell.is_null_ = true;
           cell.text_.reset();
         } else {
           cell.is_null_ = false;
-          if (OB_FAIL(alloc_string(allocator_, members.at(m).second.data(),
-                                   members.at(m).second.size(), cell.text_))) {
+          if (OB_FAIL(alloc_string(allocator_, members.at(m).text.data(),
+                                   members.at(m).text.size(), cell.text_))) {
             LOG_WARN("copy json value failed", K(ret));
           }
         }
@@ -1065,6 +926,10 @@ int ObFileSqlReader::infer_json_column_types(ObFileTableDef &def,
       seen_value = true;
       const char *ptr = cell.text_.ptr();
       const int64_t len = cell.text_.length();
+      if (cell.is_json_string_) {
+        all_bool = all_int = all_double = false;
+        continue;
+      }
       const bool is_bool = (4 == len && 0 == strncasecmp(ptr, "true", 4))
                            || (5 == len && 0 == strncasecmp(ptr, "false", 5));
       if (!is_bool) {
@@ -2107,13 +1972,14 @@ bool pq_decode_column_pages(const char *file,
                             const PqColMeta &meta,
                             const int64_t max_def,
                             std::vector<std::string> &texts,
-                            std::vector<bool> &nulls)
+                            std::vector<bool> &nulls, int64_t base_offset = 0)
 {
   bool bret = true;
   std::vector<std::string> dict;
   int64_t pos = (meta.dictionary_page_offset_ > 0 ? meta.dictionary_page_offset_
                                                  : meta.data_page_offset_);
-  if (pos <= 0 || pos >= size) {
+  pos -= base_offset;
+  if (pos < 0 || pos >= size) {
     bret = false;
   }
   int64_t value_cnt = 0;
@@ -2132,7 +1998,10 @@ bool pq_decode_column_pages(const char *file,
     }
     const int64_t header_len = r.pos() - pos;
     pos += header_len;
-    if (h.compressed_size_ < 0 || pos + h.compressed_size_ > size) {
+    if (h.num_values_ < 0 || h.num_values_ > (4LL << 20)
+        || h.num_dict_values_ < 0 || h.num_dict_values_ > (4LL << 20)
+        || h.uncompressed_size_ < 0 || h.uncompressed_size_ > (128LL << 20)
+        || h.compressed_size_ < 0 || h.compressed_size_ > size - pos) {
       bret = false;
       break;
     }
@@ -2419,6 +2288,418 @@ int ObFileSqlReader::parse_parquet(const char *buf,
   }
   return ret;
 }
+
+namespace {
+using file_json::Kind;
+
+struct StreamField
+{
+  std::string text;
+  Kind kind = Kind::Null;
+};
+
+struct StreamColumn
+{
+  std::string name;
+  unsigned candidates = ~0U;
+  int64_t present = 0;
+  ObFileSqlType type = FS_TYPE_NULL;
+};
+
+unsigned stream_candidates(const StreamField &field, bool csv)
+{
+  const char *s = field.text.data();
+  const int64_t n = field.text.size();
+  unsigned mask = 1U << FS_TYPE_VARCHAR;
+  if (csv || field.kind == Kind::Number) {
+    if (ObFileSqlValueType::is_int_text(s, n)) { mask |= 1U << FS_TYPE_BIGINT; }
+    if (ObFileSqlValueType::is_double_text(s, n)) { mask |= 1U << FS_TYPE_DOUBLE; }
+  }
+  if (csv || field.kind == Kind::Boolean) {
+    if (ObFileSqlValueType::is_bool_text(s, n)) { mask |= 1U << FS_TYPE_BOOLEAN; }
+  }
+  if (csv && ObFileSqlValueType::is_date_text(s, n)) { mask |= 1U << FS_TYPE_DATE; }
+  if (csv && ObFileSqlValueType::is_datetime_text(s, n)) { mask |= 1U << FS_TYPE_DATETIME; }
+  return mask;
+}
+
+bool same_file(const struct stat &a, const struct stat &b)
+{
+  return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size
+      && a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec
+      && a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+}
+} // namespace
+
+struct ObFileSqlStream::State
+{
+  FILE *fp = nullptr;
+  std::string path;
+  struct stat identity = {};
+  ObFileSqlFormat format = FS_FMT_INVALID;
+  char delim = ',', quote = '"', escape = '"';
+  bool header = false;
+  std::string nullstr;
+  std::vector<StreamColumn> columns;
+  std::vector<bool> selected;
+  std::vector<StreamField> fields;
+  PqFileMeta parquet;
+  size_t group = 0;
+  int64_t group_row = 0, group_size = 0;
+  std::vector<std::vector<std::string>> group_texts;
+  std::vector<std::vector<bool>> group_nulls;
+  int64_t records = 0;
+
+  ~State() { if (fp != nullptr) { fclose(fp); } }
+
+  int check_file() const
+  {
+    struct stat open_file, named_file;
+    return fstat(fileno(fp), &open_file) == 0 && stat(path.c_str(), &named_file) == 0
+        && same_file(identity, open_file) && same_file(identity, named_file)
+        ? OB_SUCCESS : OB_INVALID_DATA;
+  }
+
+  int open_file()
+  {
+    const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) { return OB_FILE_NOT_EXIST; }
+    if (fstat(fd, &identity) != 0 || !S_ISREG(identity.st_mode) || (fp = fdopen(fd, "rb")) == nullptr) {
+      close(fd);
+      return OB_INVALID_ARGUMENT;
+    }
+    char descriptor_path[64], resolved_path[PATH_MAX + 1];
+    snprintf(descriptor_path, sizeof(descriptor_path), "/proc/self/fd/%d", fd);
+    const ssize_t length = readlink(descriptor_path, resolved_path, PATH_MAX);
+    if (length < 0 || std::string(resolved_path, length) != path) { return OB_INVALID_ARGUMENT; }
+    if (format == FS_FMT_PARQUET) { return read_footer(); }
+    unsigned char bom[3];
+    if (fread(bom, 1, 3, fp) != 3 || memcmp(bom, "\xef\xbb\xbf", 3) != 0) { rewind(fp); }
+    return OB_SUCCESS;
+  }
+
+  int csv_record()
+  {
+    fields.clear();
+    int ch;
+    do { ch = getc_unlocked(fp); } while (ch == '\r' || ch == '\n');
+    if (ch == EOF) { return ferror(fp) ? OB_IO_ERROR : OB_ITER_END; }
+    size_t bytes = 0;
+    for (;;) {
+      if (fields.size() >= OB_FILE_MAX_COLUMN_CNT) { return OB_SIZE_OVERFLOW; }
+      fields.emplace_back();
+      StreamField &field = fields.back();
+      bool quoted = ch == quote;
+      if (quoted) { ch = getc_unlocked(fp); }
+      while (ch != EOF && (quoted || (ch != delim && ch != '\r' && ch != '\n'))) {
+        if (++bytes > (64UL << 20)) { return OB_SIZE_OVERFLOW; }
+        if (quoted && ch == quote) {
+          ch = getc_unlocked(fp);
+          if (escape != quote || ch != quote) { quoted = false; continue; }
+        } else if (quoted && ch == escape) {
+          ch = getc_unlocked(fp);
+          if (ch != quote && ch != escape) { return OB_INVALID_DATA; }
+        } else if (quoted && ch == '\r') {
+          const int following = getc_unlocked(fp);
+          if (following == '\n') { ch = following; }
+          else if (following != EOF) { ungetc(following, fp); }
+        }
+        field.text.push_back(static_cast<char>(ch));
+        ch = getc_unlocked(fp);
+      }
+      if (quoted || ferror(fp)) { return OB_INVALID_DATA; }
+      if (!field.text.empty() && field.text != nullstr) { field.kind = Kind::String; }
+      if (ch != delim) { return OB_SUCCESS; }
+      ch = getc_unlocked(fp);
+    }
+  }
+
+  int json_record(bool infer)
+  {
+    std::string line;
+    for (;;) {
+      line.clear();
+      int ch;
+      while ((ch = getc_unlocked(fp)) != EOF && ch != '\n') {
+        if (line.size() >= (64UL << 20)) { return OB_SIZE_OVERFLOW; }
+        line.push_back(ch);
+      }
+      if (ferror(fp)) { return OB_IO_ERROR; }
+      if (line.find_first_not_of(" \t\r") != std::string::npos) { break; }
+      if (ch == EOF) { return OB_ITER_END; }
+    }
+    file_json::FlatObject object(OB_FILE_MAX_COLUMN_CNT);
+    if (!object.parse(line.data(), line.size())) { return object.nested_ ? OB_NOT_SUPPORTED : OB_INVALID_ARGUMENT; }
+    fields.assign(columns.size(), StreamField());
+    for (auto &member : object.members_) {
+      size_t at = 0;
+      while (at < columns.size() && columns[at].name != member.key) { ++at; }
+      if (at == columns.size()) {
+        if (!infer || at >= OB_FILE_MAX_COLUMN_CNT) { return OB_INVALID_DATA; }
+        columns.emplace_back();
+        columns.back().name = member.key;
+        fields.emplace_back();
+      }
+      fields[at].text.swap(member.text);
+      fields[at].kind = member.kind;
+    }
+    return OB_SUCCESS;
+  }
+
+  int read_at(int64_t offset, size_t len, char *dst)
+  {
+    if (offset < 0 || offset > identity.st_size || len > static_cast<uint64_t>(identity.st_size - offset)) {
+      return OB_INVALID_DATA;
+    }
+    while (len > 0) {
+      ssize_t got = pread(fileno(fp), dst, len, offset);
+      if (got < 0 && errno == EINTR) { continue; }
+      if (got <= 0) { return OB_IO_ERROR; }
+      dst += got;
+      offset += got;
+      len -= got;
+    }
+    return OB_SUCCESS;
+  }
+
+  int read_footer()
+  {
+    char head[4], tail[8];
+    int ret = OB_SUCCESS;
+    if (identity.st_size < 12 || OB_FAIL(read_at(0, 4, head))
+        || OB_FAIL(read_at(identity.st_size - 8, 8, tail))
+        || memcmp(head, "PAR1", 4) || memcmp(tail + 4, "PAR1", 4)) { return OB_INVALID_DATA; }
+    uint32_t size = 0;
+    memcpy(&size, tail, 4);
+    if (size == 0 || size > (64U << 20) || size > identity.st_size - 12) { return OB_INVALID_DATA; }
+    std::vector<char> footer(size);
+    if (OB_FAIL(read_at(identity.st_size - size - 8, size, footer.data()))) { return ret; }
+    if (!pq_parse_file_meta(footer.data(), size, parquet) || parquet.schema_.empty()
+        || parquet.schema_[0].num_children_ <= 0 || parquet.schema_.size() > OB_FILE_MAX_COLUMN_CNT + 1
+        || parquet.schema_[0].num_children_ + 1 != parquet.schema_.size()) { return OB_INVALID_DATA; }
+    int64_t count = 0;
+    for (const auto &rg : parquet.row_groups_) {
+      if (rg.num_rows_ < 0 || rg.num_rows_ > OB_FILE_SQL_MAX_ROW_CNT - count
+          || rg.columns_.size() + 1 != parquet.schema_.size()) { return OB_INVALID_DATA; }
+      count += rg.num_rows_;
+    }
+    return count == parquet.num_rows_ ? OB_SUCCESS : OB_INVALID_DATA;
+  }
+
+  int parquet_record()
+  {
+    while (group_row == group_size) {
+      if (group == parquet.row_groups_.size()) { return OB_ITER_END; }
+      const auto &rg = parquet.row_groups_[group++];
+      group_size = rg.num_rows_;
+      group_row = 0;
+      group_texts.assign(columns.size(), {});
+      group_nulls.assign(columns.size(), {});
+      if (group_size == 0) { continue; }
+      size_t decoded_bytes = 0;
+      for (size_t i = 0; i < columns.size(); ++i) {
+        if (!selected.empty() && !selected[i]) { continue; }
+        const auto &meta = rg.columns_[i];
+        const int64_t offset = meta.dictionary_page_offset_ > 0 ? meta.dictionary_page_offset_ : meta.data_page_offset_;
+        const int64_t bytes = meta.total_compressed_size_;
+        if (offset < 4 || bytes <= 0 || bytes > (128LL << 20) || bytes > identity.st_size - offset
+            || meta.num_values_ != group_size) { return OB_INVALID_DATA; }
+        std::vector<char> chunk(bytes);
+        int ret = read_at(offset, bytes, chunk.data());
+        if (ret != OB_SUCCESS) { return ret; }
+        if (!pq_decode_column_pages(chunk.data(), bytes, meta, parquet.schema_[i+1].repetition_ == 1,
+                                    group_texts[i], group_nulls[i], offset)
+            || group_texts[i].size() != group_size || group_nulls[i].size() != group_size) { return OB_INVALID_DATA; }
+        decoded_bytes += group_texts[i].capacity() * sizeof(std::string) + group_nulls[i].capacity() / 8;
+        for (const auto &value : group_texts[i]) { decoded_bytes += value.capacity(); }
+        if (decoded_bytes > (256UL << 20)) { return OB_SIZE_OVERFLOW; }
+      }
+    }
+    fields.resize(columns.size());
+    for (size_t i = 0; i < columns.size(); ++i) {
+      if (!selected.empty() && !selected[i]) { fields[i].kind = Kind::Null; continue; }
+      fields[i].text.swap(group_texts[i][group_row]);
+      fields[i].kind = group_nulls[i][group_row] ? Kind::Null : Kind::String;
+    }
+    ++group_row;
+    return OB_SUCCESS;
+  }
+
+  void observe()
+  {
+    for (size_t i = 0; i < fields.size(); ++i) {
+      if (fields[i].kind != Kind::Null) {
+        columns[i].candidates &= stream_candidates(fields[i], format == FS_FMT_CSV);
+        ++columns[i].present;
+      }
+    }
+  }
+};
+
+ObFileSqlStream::ObFileSqlStream() : state_(new (std::nothrow) State()) {}
+ObFileSqlStream::~ObFileSqlStream() { delete state_; }
+
+int ObFileSqlStream::describe(ObIAllocator &alloc, const ObString &path, ObFileSqlFormat format,
+                              const ObFileSqlOptions &options, ObFileTableDef &def)
+{
+  if (state_ == nullptr) { return OB_ALLOCATE_MEMORY_FAILED; }
+  State &s = *state_;
+  s.path.assign(path.ptr(), path.length());
+  s.format = format;
+  s.delim = options.delim_;
+  s.quote = options.quote_;
+  s.escape = options.has_escape_ ? options.escape_ : s.quote;
+  if (options.has_nullstr_) { s.nullstr.assign(options.nullstr_.ptr(), options.nullstr_.length()); }
+  int ret = s.open_file();
+  if (ret != OB_SUCCESS) { return ret; }
+  std::vector<StreamField> first;
+  if (format == FS_FMT_PARQUET) {
+    for (size_t i = 1; i < s.parquet.schema_.size(); ++i) {
+      const auto &e = s.parquet.schema_[i];
+      if (e.num_children_ > 0 || e.repetition_ == 2) { return OB_NOT_SUPPORTED; }
+      s.columns.emplace_back();
+      s.columns.back().name = e.name_;
+      s.columns.back().type = pq_type_to_sql_type(e.type_);
+    }
+    s.records = s.parquet.num_rows_;
+  } else {
+    const bool csv = format == FS_FMT_CSV;
+    if (csv) {
+      if ((ret = s.csv_record()) != OB_SUCCESS) { return ret; }
+      first.swap(s.fields);
+      s.columns.resize(first.size());
+    }
+    while ((ret = csv ? s.csv_record() : s.json_record(true)) == OB_SUCCESS) {
+      if (s.fields.size() != s.columns.size()) { return OB_INVALID_ARGUMENT; }
+      if (++s.records > OB_FILE_SQL_MAX_ROW_CNT) { return OB_SIZE_OVERFLOW; }
+      s.observe();
+    }
+    if (ret != OB_ITER_END) { return ret; }
+    if (s.columns.empty()) { return OB_INVALID_ARGUMENT; }
+    if (csv) {
+      s.header = options.header_;
+      for (size_t i = 0; i < first.size(); ++i) {
+        if (!options.has_header_ && s.records > 0
+            && (s.columns[i].candidates & ~stream_candidates(first[i], true) & ((1U << FS_TYPE_NULL) - 1))) {
+          s.header = true;
+        }
+      }
+      for (size_t i = 0; i < first.size(); ++i) {
+        if (s.header) {
+          s.columns[i].name = first[i].text;
+          s.columns[i].name.erase(s.columns[i].name.find_last_not_of(" \t") + 1);
+        }
+      }
+      if (!s.header) { ++s.records; s.fields.swap(first); s.observe(); }
+    }
+    for (auto &column : s.columns) {
+      if (column.present == 0) { continue; }
+      for (auto t : {FS_TYPE_BOOLEAN, FS_TYPE_BIGINT, FS_TYPE_DOUBLE, FS_TYPE_DATE, FS_TYPE_DATETIME, FS_TYPE_VARCHAR}) {
+        if (column.candidates & (1U << t)) { column.type = t; break; }
+      }
+    }
+  }
+  if ((ret = s.check_file()) != OB_SUCCESS) { return ret; }
+  def.format_ = format;
+  def.column_cnt_ = s.columns.size();
+  def.row_cnt_ = s.records;
+  if (OB_FAIL(ob_write_string(alloc, path, def.path_))) { return ret; }
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.StartArray();
+  writer.String(s.path.data(), s.path.size());
+  writer.Int(format);
+  writer.Uint64(s.identity.st_dev);
+  writer.Uint64(s.identity.st_ino);
+  writer.Int64(s.identity.st_size);
+  writer.Int64(s.identity.st_mtim.tv_sec);
+  writer.Int64(s.identity.st_mtim.tv_nsec);
+  writer.Int64(s.identity.st_ctim.tv_sec);
+  writer.Int64(s.identity.st_ctim.tv_nsec);
+  writer.Bool(s.header);
+  writer.Int(s.delim);
+  writer.Int(s.quote);
+  writer.Int(s.escape);
+  writer.String(s.nullstr.data(), s.nullstr.size());
+  std::vector<std::string> names;
+  for (size_t i = 0; i < s.columns.size(); ++i) {
+    const auto &col = s.columns[i];
+    std::string base = col.name.empty() ? "column" + std::to_string(i) : col.name;
+    std::string name = base;
+    for (unsigned suffix = 2; std::find(names.begin(), names.end(), name) != names.end(); ++suffix) {
+      name = base + "__" + std::to_string(suffix);
+    }
+    names.push_back(name);
+    if (OB_FAIL(alloc_string(alloc, name.data(), name.size(), def.columns_[i].name_))) { return ret; }
+    def.columns_[i].type_ = col.type;
+    def.columns_[i].nullable_ = format == FS_FMT_PARQUET ? s.parquet.schema_[i+1].repetition_ == 1 : col.present == 0 || col.present < s.records;
+    writer.String(col.name.data(), col.name.size());
+    writer.Int(col.type);
+  }
+  writer.EndArray();
+  return alloc_string(alloc, buffer.GetString(), buffer.GetSize(), def.scan_descriptor_);
+}
+
+int ObFileSqlStream::start(const ObString &descriptor)
+{
+  if (state_ == nullptr) { return OB_ALLOCATE_MEMORY_FAILED; }
+  State &s = *state_;
+  rapidjson::Document doc;
+  doc.Parse(descriptor.ptr(), descriptor.length());
+  if (doc.HasParseError() || !doc.IsArray() || doc.Size() < 16 || (doc.Size() & 1)) { return OB_INVALID_DATA; }
+  s.path = doc[0].GetString();
+  s.format = static_cast<ObFileSqlFormat>(doc[1].GetInt());
+  s.header = doc[9].GetBool();
+  s.delim = doc[10].GetInt();
+  s.quote = doc[11].GetInt();
+  s.escape = doc[12].GetInt();
+  s.nullstr.assign(doc[13].GetString(), doc[13].GetStringLength());
+  for (unsigned i = 14; i < doc.Size(); i += 2) {
+    s.columns.emplace_back();
+    s.columns.back().name.assign(doc[i].GetString(), doc[i].GetStringLength());
+    s.columns.back().type = static_cast<ObFileSqlType>(doc[i+1].GetInt());
+  }
+  int ret = s.open_file();
+  if (ret != OB_SUCCESS) { return ret; }
+  if (s.identity.st_dev != doc[2].GetUint64() || s.identity.st_ino != doc[3].GetUint64()
+      || s.identity.st_size != doc[4].GetInt64() || s.identity.st_mtim.tv_sec != doc[5].GetInt64()
+      || s.identity.st_mtim.tv_nsec != doc[6].GetInt64() || s.identity.st_ctim.tv_sec != doc[7].GetInt64()
+      || s.identity.st_ctim.tv_nsec != doc[8].GetInt64()) { return OB_INVALID_DATA; }
+  return s.header ? s.csv_record() : OB_SUCCESS;
+}
+
+void ObFileSqlStream::select_column(int64_t index, bool selected)
+{
+  if (state_->selected.empty()) { state_->selected.assign(state_->columns.size(), true); }
+  if (index >= 0 && index < state_->selected.size()) { state_->selected[index] = selected; }
+}
+
+int ObFileSqlStream::next()
+{
+  State &s = *state_;
+  int ret = s.format == FS_FMT_CSV ? s.csv_record() : s.format == FS_FMT_JSONL ? s.json_record(false) : s.parquet_record();
+  if (OB_SUCC(ret)) {
+    if (s.fields.size() != s.columns.size()) { return OB_INVALID_DATA; }
+    if ((++s.records & 255) == 0) { ret = s.check_file(); }
+  } else if (ret == OB_ITER_END && s.check_file() != OB_SUCCESS) {
+    ret = OB_INVALID_DATA;
+  }
+  return ret;
+}
+
+int ObFileSqlStream::cell(int64_t idx, ObFileSqlType &type, ObFileSqlCell &cell)
+{
+  if (idx < 0 || idx >= state_->fields.size()) { return OB_INVALID_ARGUMENT; }
+  auto &field = state_->fields[idx];
+  type = state_->columns[idx].type;
+  cell.is_null_ = field.kind == Kind::Null;
+  if (type == FS_TYPE_DATETIME && !field.text.empty()) {
+    ObFileSqlValueType::normalize_datetime_text(&field.text[0], field.text.size());
+  }
+  cell.text_.assign_ptr(field.text.data(), field.text.size());
+  return OB_SUCCESS;
+}
+
 
 }  // namespace sql
 }  // namespace oceanbase

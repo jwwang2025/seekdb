@@ -25,6 +25,7 @@ namespace oceanbase
 namespace sql
 {
 class ObPhyOpSeriCtx;
+class ObFileSqlStream;
 
 class ObValuesTableAccessSpec : public ObOpSpec
 {
@@ -34,6 +35,7 @@ public:
     : ObOpSpec(alloc, type), access_type_(ObValuesTableDef::ACCESS_EXPR), column_exprs_(alloc),
       value_exprs_(alloc), start_param_idx_(-1), end_param_idx_(-1), obj_params_(alloc) {}
   INHERIT_TO_STRING_KV("op_spec", ObOpSpec, K_(access_type));
+  common::ObString file_scan_descriptor_;
   ObValuesTableDef::TableAccessType access_type_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> value_exprs_;
@@ -53,8 +55,10 @@ public:
   virtual int switch_iterator() override;
   virtual int inner_get_next_row() override;
   virtual int inner_close() override;
-  virtual void destroy() override { ObOperator::destroy(); }
+  virtual void destroy() override;
 private:
+  int restart_file();
+  int next_file_row();
   int calc_next_row();
   int calc_datum_from_expr(const int64_t col_idx,
                            const int64_t row_idx,
@@ -72,6 +76,7 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObValuesTableAccessOp);
 
 private:
+  ObFileSqlStream *file_;
   ObDatumCaster datum_caster_;
   common::ObCastMode cm_;
   int64_t row_idx_;
