@@ -434,6 +434,13 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
             has_alter_column_option = true;
             bool tmp_has_add_column = false;
             bool tmp_has_drop_column = false;
+            for (int64_t j = 0; j < action_node->num_child_; ++j) {
+              if (node.num_child_ > 1 && action_node->children_[j] != nullptr
+                  && action_node->children_[j]->type_ == T_RETRY_AI_COLUMN) {
+                LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
+                return OB_NOT_SUPPORTED;
+              }
+            }
             if (OB_FAIL(resolve_column_options(*action_node, temp_is_modify_column_visibility,
                                               is_mysql_drop_column, add_column_names_set,
                                               reduced_visible_col_set, drop_column_names_set,
@@ -833,7 +840,10 @@ int ObAlterTableResolver::resolve_column_options(const ParseNode &node,
           break;
         }
         case T_RETRY_AI_COLUMN: {
-          if (OB_FAIL(resolve_retry_ai_column(*column_node))) {
+          if (node.num_child_ != 1) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
+          } else if (OB_FAIL(resolve_retry_ai_column(*column_node))) {
           }
           break;
         }
@@ -3488,12 +3498,14 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
     ret = OB_NOT_INIT;
   } else {
     column_name.assign_ptr(column_node->str_value_, static_cast<int32_t>(column_node->str_len_));
-    if (OB_ISNULL(ai_column = table_schema_->get_column_schema(column_name))
-        || !ai_column->is_ai_column()) {
+    if (OB_ISNULL(ai_column = table_schema_->get_column_schema(column_name))) {
       ret = OB_ERR_BAD_FIELD_ERROR;
       LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, column_name.length(), column_name.ptr(),
                      table_schema_->get_table_name_str().length(),
                      table_schema_->get_table_name_str().ptr());
+    } else if (!ai_column->is_ai_column()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
     } else if (OB_ISNULL(status_column = table_schema_->get_column_schema(
                            ai_column->get_ai_column_status_column_id()))) {
       ret = OB_ERR_UNEXPECTED;
@@ -3514,6 +3526,7 @@ int ObAlterTableResolver::resolve_retry_ai_column(const ParseNode &node)
                                ai_column->get_column_name(),
                                status_column->get_column_name_str().length(),
                                status_column->get_column_name()))) {
+    } else if (OB_FAIL(sql.append_fmt(", `__ai_gen` = uuid_short()"))) {
     } else if (OB_NOT_NULL(where_node)) {
       const ParseNode *condition_node = where_node->num_child_ > 0
                                             ? where_node->children_[0] : NULL;

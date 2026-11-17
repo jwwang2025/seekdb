@@ -150,9 +150,9 @@ int check_ai_column_type(const ParseNode *expr_node, const ObColumnSchemaV2 &col
   } else {
     func_name.assign_ptr(name_node->str_value_, static_cast<int32_t>(name_node->str_len_));
     if (0 == func_name.case_compare("ai_complete")) {
-      if (!column.is_string_type() && !column.is_json()) {
+      if (!column.is_string_type() && !column.is_json() && !ob_is_integer_type(column.get_data_type())) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "ai_complete column type, expected string or json");
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "ai_complete column type, expected string, JSON or integer");
       }
     } else if (0 == func_name.case_compare("ai_embed")) {
       if (!is_ai_vector_column(column)) {
@@ -2167,6 +2167,11 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
             int64_t embed_dimension = 4;
             if (OB_FAIL(parse_ai_embed_expr(expr_str, embed_model, embed_input,
                                             embed_dimension))) {
+            } else if (embed_dimension != strtoll(column.get_extended_type_info().at(0).ptr() + 7, nullptr, 10)) {
+              ret = OB_ERR_INVALID_VECTOR_DIM;
+              LOG_USER_ERROR(OB_ERR_INVALID_VECTOR_DIM,
+                             static_cast<unsigned>(strtoll(column.get_extended_type_info().at(0).ptr() + 7, nullptr, 10)),
+                             static_cast<unsigned>(embed_dimension));
             } else if (OB_FAIL(column.set_ai_column_embed_model(embed_model))) {
             } else if (OB_FAIL(column.set_ai_column_embed_input(embed_input))) {
             } else if (OB_FAIL(column.set_ai_column_embed_dimension(embed_dimension))) {

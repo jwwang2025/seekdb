@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "sql/resolver/dml/ob_file_table_def.h"
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "config_bridge.h"
@@ -1697,7 +1698,10 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
     spec.start_param_idx_ = table_def->start_param_idx_;
     spec.end_param_idx_ = table_def->end_param_idx_;
     ObIAllocator &allocator = phy_plan_->get_allocator();
-    if (OB_FAIL(spec.column_exprs_.prepare_allocate(op.get_column_exprs().count()))) {
+    const TableItem *table = op.get_stmt()->get_table_item_by_id(op.get_table_id());
+    if (table != nullptr && table->is_file_table()
+        && OB_FAIL(ob_write_string(allocator, table->file_table_def_->scan_descriptor_, spec.file_scan_descriptor_))) {
+    } else if (OB_FAIL(spec.column_exprs_.prepare_allocate(op.get_column_exprs().count()))) {
     } else if (OB_FAIL(spec.value_exprs_.prepare_allocate(table_def->access_exprs_.count()))) {
     } else if (OB_FAIL(spec.obj_params_.prepare_allocate(table_def->access_objs_.count()))) {
     } else {
@@ -1706,6 +1710,8 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
         ObExpr *expr = NULL;
         if (OB_ISNULL(col_expr)) {
           ret = OB_ERR_UNEXPECTED;
+        } else if (!spec.file_scan_descriptor_.empty() && !col_expr->is_explicited_reference()) {
+          spec.column_exprs_.at(i) = nullptr;
         } else if (OB_FAIL(mark_expr_self_produced(col_expr))) {
         } else if (OB_FAIL(generate_rt_expr(*col_expr, expr))) {
         } else if (OB_ISNULL(expr)) {
@@ -5457,6 +5463,7 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_line_str(), spec.line_str_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_closed_cht(), spec.closed_cht_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_escaped_cht(), spec.escaped_cht_))) {
+  } else if (op.get_has_header() && OB_FAIL(ob_write_string(alloc, op.get_header_str(), spec.header_str_))) {
   } else if (OB_FAIL(spec.external_properties_.store_str(op.get_external_properties()))) {
   } else if (OB_FAIL(spec.user_vars_.init(op.get_user_vars().count()))) {
   } else if (OB_FAIL(spec.select_exprs_.init(op.get_select_exprs().count()))) {
@@ -5479,6 +5486,7 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
     }
     if (OB_SUCC(ret)) {
       spec.into_type_ = op.get_into_type();
+      spec.has_header_ = op.get_has_header();
       spec.is_optional_ = op.get_is_optional();
       spec.is_single_ = op.get_is_single();
       spec.max_file_size_ = op.get_max_file_size();

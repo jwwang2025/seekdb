@@ -752,9 +752,11 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
               gen_col.set_collation_type(CS_TYPE_BINARY);
               ObObj zero_value;
               zero_value.set_int(0);
+              ObObj request_default;
+              request_default.set_varchar("uuid_short()");
               if (OB_FAIL(gen_col.set_column_name("__ai_gen"))) {
               } else if (OB_FAIL(gen_col.set_orig_default_value(zero_value))) {
-              } else if (OB_FAIL(gen_col.set_cur_default_value(zero_value, false))) {
+              } else if (OB_FAIL(gen_col.set_cur_default_value(request_default, true))) {
               } else if (OB_FAIL(ai_hidden_cols.push_back(gen_col))) {
               } else {
                 ai_gen_column_id = gen_col.get_column_id();
@@ -783,6 +785,16 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
               } else if (OB_FAIL(column.set_ai_column_status_column_id(status_col.get_column_id()))) {
               } else if (OB_FAIL(column.set_ai_column_gen_column_id(ai_gen_column_id))) {
               } else if (OB_FAIL(ai_hidden_cols.push_back(status_col))) {
+              } else {
+                ObColumnSchemaV2 result_spec;
+                if (OB_FAIL(result_spec.assign(status_col))) { return ret; }
+                result_spec.set_column_id(gen_column_id());
+                name_pos = 0;
+                if (OB_FAIL(databuff_printf(name_buf, sizeof(name_buf), name_pos,
+                                            "__ai_result_spec_%lu", column.get_column_id()))) {
+                } else if (OB_FAIL(result_spec.set_column_name(ObString(name_pos, name_buf)))) {
+                } else if (OB_FAIL(ai_hidden_cols.push_back(result_spec))) {
+                }
               }
             }
           }
@@ -981,6 +993,8 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
                 LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, dep_name.length(), dep_name.ptr(),
                                table_schema.get_table_name_str().length(),
                                table_schema.get_table_name_str().ptr());
+              } else if (dep_column->is_ai_column()) {
+                ret = OB_NOT_SUPPORTED;
               } else if (OB_FAIL(ai_column->add_cascaded_column_id(dep_column->get_column_id()))) {
               }
             }

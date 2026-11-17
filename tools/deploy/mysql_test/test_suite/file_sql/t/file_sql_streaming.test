@@ -1,0 +1,15 @@
+# owner: SoFanzZ
+# description: File sources support rescan, projection, empty input and full-scan aggregation.
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_data.inc
+--disable_query_log
+let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
+set session enable_file_sql = ON;
+eval select /*+ use_nl(a b) leading(a b) */ count(*) as rescanned_rows
+from read_csv('$FILE_SQL_DATA_DIR/basic.csv') a
+cross join read_json('$FILE_SQL_DATA_DIR/basic.jsonl') b;
+eval select count(*) as projected_rows from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet');
+eval select sum(c1) as projected_sum from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet');
+eval select count(*) as filtered_rows from read_csv('$FILE_SQL_DATA_DIR/basic.csv') where id < 0;
+eval select sum(id) as total_id from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+--enable_query_log
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_data.inc

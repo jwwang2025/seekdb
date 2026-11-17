@@ -1,0 +1,41 @@
+# owner: SoFanzZ
+# description: Strict reads see pending AI values in the caller's own transaction.
+--disable_query_log
+--disable_warnings
+drop database if exists ai_column_transaction_visibility;
+--enable_warnings
+create database ai_column_transaction_visibility;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('transaction_visibility_model',
+  '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('transaction_visibility_ep',
+  '{"ai_model_name":"transaction_visibility_model","url":"http://127.0.0.1:9/v1/chat/completions","access_key":"local-test","provider":"openai"}');
+create table ai_column_transaction_visibility.docs(
+  id bigint primary key,
+  content varchar(200),
+  result varchar(400) AI COLUMN (AI_COMPLETE('transaction_visibility_model', content))
+  WITH (sync_mode='async', max_retries=0)
+);
+start transaction;
+insert into ai_column_transaction_visibility.docs(id, content) values (1, 'uncommitted');
+select result is null as pending_result from ai_column_transaction_visibility.docs;
+set session ai_column_strict_read = on;
+--replace_regex /table_id=[0-9]+, column_id=[0-9]+/table_id=<table_id>, column_id=<column_id>/
+--error 11120
+select result from ai_column_transaction_visibility.docs;
+set session ai_column_strict_read = off;
+select count(*) = 1 as own_task_visible
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_transaction_visibility';
+rollback;
+select count(*) = 0 as rollback_removes_row from ai_column_transaction_visibility.docs;
+select count(*) = 0 as rollback_removes_task
+from oceanbase.__all_ai_column_task task
+join oceanbase.__all_table t on t.table_id = task.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_transaction_visibility';
+drop database ai_column_transaction_visibility;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('transaction_visibility_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('transaction_visibility_model');
+--enable_query_log

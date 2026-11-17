@@ -15,7 +15,9 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
+#include <vector>
 #include "config_bridge.h"
+#include "sql/engine/dml/ob_table_modify_op.h"
 #include "sql/engine/dml/ob_dml_service.h"
 #include "sql/engine/expr/ob_datum_cast.h"
 #include "share/rc/ob_server_runtime.h"
@@ -41,6 +43,157 @@ using namespace share;
 using namespace transaction;
 namespace sql
 {
+
+namespace {
+int row_object(const ObDMLBaseCtDef &def, const ExprFixedArray &row, uint64_t column,
+               ObEvalCtx &ctx, ObObj &value)
+{
+  int64_t idx = -1;
+  for (int64_t i = 0; i < def.column_ids_.count(); ++i) {
+    if (def.column_ids_.at(i) == column) { idx = i; break; }
+  }
+  if (idx < 0 || idx >= row.count()) { return OB_ENTRY_NOT_EXIST; }
+  ObExpr *expr = row.at(idx);
+  ObDatum *datum = nullptr;
+  int ret = expr->eval(ctx, datum);
+  if (OB_SUCC(ret)) { ret = datum->to_obj(value, expr->obj_meta_, expr->obj_datum_map_); }
+  return ret;
+}
+
+// Encode the printable predicate as a hex SQL string. No primary-key bytes
+// become SQL syntax in the bookkeeping write, including quotes and NUL.
+int task_key(const ObDMLBaseCtDef &def, const ObTableSchema &table,
+             const ExprFixedArray &row, ObDMLRtCtx &ctx, ObSqlString &encoded)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString predicate;
+  const auto &keys = table.get_rowkey_info();
+  for (int64_t i = 0; OB_SUCC(ret) && i < keys.get_size(); ++i) {
+    uint64_t id = 0;
+    ObObj value;
+    if (OB_FAIL(keys.get_column_id(i, id))) {
+    } else if (OB_FAIL(row_object(def, row, id, ctx.get_eval_ctx(), value))) {
+    } else {
+      const auto *col = table.get_column_schema(id);
+      if (col == nullptr) { return OB_SCHEMA_ERROR; }
+      if (i && OB_FAIL(predicate.append(" AND "))) { return ret; }
+      if (OB_FAIL(predicate.append("`"))) { return ret; }
+      const auto &name = col->get_column_name_str();
+      for (int j = 0; j < name.length(); ++j) {
+        if (name[j] == '`' && OB_FAIL(predicate.append("`"))) { return ret; }
+        if (OB_FAIL(predicate.append(name.ptr()+j, 1))) { return ret; }
+      }
+      if (OB_FAIL(predicate.append("` = "))) { return ret; }
+      std::vector<char> literal(256 + 2 * value.get_deep_copy_size());
+      int64_t pos = 0;
+      if (OB_FAIL(value.print_sql_literal(literal.data(), literal.size(), pos, ctx.op_.get_obj_print_params()))) {
+      } else if (OB_FAIL(predicate.append(literal.data(), pos))) {
+      }
+    }
+  }
+  static const char hex[] = "0123456789abcdef";
+  if (OB_SUCC(ret)) { ret = encoded.append("X'"); }
+  for (int64_t i = 0; OB_SUCC(ret) && i < predicate.length(); ++i) {
+    unsigned char byte = predicate.ptr()[i];
+    char digits[] = {hex[byte >> 4], hex[byte & 15]};
+    ret = encoded.append(digits, 2);
+  }
+  if (OB_SUCC(ret)) { ret = encoded.append("'"); }
+  return ret;
+}
+
+int write_ai_task(ObDMLRtCtx &ctx, const ObSqlString &command)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ctx.op_.open_inner_conn())) {
+  } else if (OB_FAIL(ctx.op_.begin_nested_session(false))) {
+  } else {
+    ret = ctx.op_.execute_write(command.ptr());
+    int end_ret = ctx.op_.end_nested_session();
+    if (OB_SUCC(ret)) { ret = end_ret; }
+  }
+  return ret;
+}
+
+int sync_row_tasks(const ObDMLBaseCtDef &def, ObDMLRtCtx &ctx, const ExprFixedArray *before,
+                   const ExprFixedArray *after, const ColContentFixedArray *assigned)
+{
+  const uint64_t table_id = def.das_base_ctdef_.index_tid_;
+  if (is_inner_table(table_id) || !def.is_primary_index_) { return OB_SUCCESS; }
+  auto *sql_ctx = ctx.get_exec_ctx().get_sql_ctx();
+  if (sql_ctx == nullptr || sql_ctx->schema_guard_ == nullptr) { return OB_ERR_UNEXPECTED; }
+  const ObTableSchema *table = nullptr;
+  int ret = sql_ctx->schema_guard_->get_table_schema(table_id, table);
+  if (OB_FAIL(ret) || table == nullptr) { return OB_SUCC(ret) ? OB_SCHEMA_ERROR : ret; }
+  ObSqlString old_key, new_key;
+  for (auto iter = table->column_begin(); OB_SUCC(ret) && iter != table->column_end(); ++iter) {
+    const auto &col = **iter;
+    if (!col.is_ai_column()) { continue; }
+    const uint64_t state_id = col.get_ai_column_status_column_id();
+    if (assigned != nullptr && old_key.empty()) {
+      bool generation_changed = false;
+      for (int64_t i = 0; i < assigned->count(); ++i) {
+        const uint64_t at = assigned->at(i).projector_index_;
+        generation_changed |= at < def.column_ids_.count()
+                              && def.column_ids_.at(at) == col.get_ai_column_gen_column_id();
+      }
+      if (generation_changed) {
+        ObObj generation;
+        ObSqlString migrate;
+        if (OB_FAIL(task_key(def, *table, *before, ctx, old_key))
+            || OB_FAIL(task_key(def, *table, *after, ctx, new_key))
+            || OB_FAIL(row_object(def, *after, col.get_ai_column_gen_column_id(), ctx.get_eval_ctx(), generation))) {
+          break;
+        }
+        if (OB_FAIL(migrate.append_fmt("UPDATE oceanbase.__all_ai_column_task SET request_id=%ld,"
+            "state=0,retry_count=0,result_value='',eligible_ts=NOW(6),rowkey_hash=SHA2(%s,256),rowkey_predicate=%s "
+            "WHERE table_id=%lu AND rowkey_hash=SHA2(%s,256)", generation.get_int(),
+            new_key.ptr(), new_key.ptr(), table_id, old_key.ptr()))) {
+        } else { ret = write_ai_task(ctx, migrate); }
+        if (OB_FAIL(ret)) { break; }
+      }
+    }
+    if (assigned != nullptr) {
+      bool touched = false;
+      for (int64_t i = 0; i < assigned->count(); ++i) {
+        uint64_t idx = assigned->at(i).projector_index_;
+        if (idx < def.column_ids_.count() && def.column_ids_.at(idx) == state_id) { touched = true; break; }
+      }
+      if (!touched) { continue; }
+    }
+    if (before != nullptr && old_key.empty() && OB_FAIL(task_key(def, *table, *before, ctx, old_key))) { break; }
+    if (after != nullptr && new_key.empty() && OB_FAIL(task_key(def, *table, *after, ctx, new_key))) { break; }
+    ObSqlString command;
+    if (before != nullptr && (after == nullptr || old_key.string() != new_key.string())) {
+      if (OB_FAIL(command.append_fmt("DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%lu "
+          "AND column_id=%lu AND rowkey_hash=SHA2(%s,256)", table_id, col.get_column_id(), old_key.ptr()))) {
+      } else if (OB_FAIL(write_ai_task(ctx, command))) {
+      }
+      command.reuse();
+    }
+    if (OB_FAIL(ret) || after == nullptr) { continue; }
+    ObObj state, generation;
+    ret = row_object(def, *after, state_id, ctx.get_eval_ctx(), state);
+    if (ret == OB_ENTRY_NOT_EXIST && before == nullptr) { ret = OB_SUCCESS; state.set_int(0); }
+    if (OB_FAIL(ret)) { break; }
+    if (state.get_int() == 0) {
+      ret = row_object(def, *after, col.get_ai_column_gen_column_id(), ctx.get_eval_ctx(), generation);
+      if (ret == OB_ENTRY_NOT_EXIST) { ret = OB_SUCCESS; generation.set_int(0); }
+      if (OB_FAIL(ret)) { break; }
+      ret = command.append_fmt("REPLACE INTO oceanbase.__all_ai_column_task "
+          "(table_id,column_id,rowkey_hash,rowkey_predicate,request_id,eligible_ts,state,retry_count,result_value) "
+          "VALUES (%lu,%lu,SHA2(%s,256),%s,%ld,NOW(6),0,0,'')",
+          table_id, col.get_column_id(), new_key.ptr(), new_key.ptr(), generation.get_int());
+    } else {
+      ret = command.append_fmt("DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%lu "
+          "AND column_id=%lu AND rowkey_hash=SHA2(%s,256)", table_id, col.get_column_id(), new_key.ptr());
+    }
+    if (OB_SUCC(ret)) { ret = write_ai_task(ctx, command); }
+  }
+  return ret;
+}
+} // namespace
+
 
 bool ObDMLService::check_cascaded_reference(const ObExpr *expr, const ObExprPtrIArray &row)
 {
@@ -854,6 +1007,9 @@ int ObDMLService::insert_row(const ObInsCtDef &ins_ctdef,
                                 ins_ctdef.new_row_,
                                 stored_row))) {
   }
+  if (OB_SUCC(ret)) {
+    ret = sync_row_tasks(ins_ctdef, dml_rtctx, nullptr, &ins_ctdef.new_row_, nullptr);
+  }
   return ret;
 }
 
@@ -894,6 +1050,9 @@ int ObDMLService::delete_row(const ObDelCtDef &del_ctdef,
                                                               del_ctdef.old_row_,
                                                               del_ctdef.trans_info_expr_,
                                                               stored_row))) {
+  }
+  if (OB_SUCC(ret)) {
+    ret = sync_row_tasks(del_ctdef, dml_rtctx, &del_ctdef.old_row_, nullptr, nullptr);
   }
   return ret;
 }
@@ -1091,6 +1250,9 @@ int ObDMLService::update_row(const ObUpdCtDef &upd_ctdef,
                 "old row", ROWEXPR2STR(dml_rtctx.get_eval_ctx(), upd_ctdef.old_row_),
                 "new row", ROWEXPR2STR(dml_rtctx.get_eval_ctx(), upd_ctdef.new_row_));
     }
+  }
+  if (OB_SUCC(ret) && upd_rtdef.is_row_changed_) {
+    ret = sync_row_tasks(upd_ctdef, dml_rtctx, &upd_ctdef.old_row_, &upd_ctdef.new_row_, &upd_ctdef.assign_columns_);
   }
   return ret;
 }

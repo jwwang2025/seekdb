@@ -603,18 +603,14 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
               }
             } else if (OB_NOT_NULL(get_ai_owner_by_gen_column(*table_schema,
                                                               column_schema->get_column_id()))) {
-              ObConstRawExpr *one_expr = NULL;
-              ObOpRawExpr *add_expr = NULL;
-              if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*params_.expr_factory_,
-                                                               ObIntType,
-                                                               1,
-                                                               one_expr))) {
-              } else if (OB_FAIL(ObRawExprUtils::build_add_expr(*params_.expr_factory_,
-                                                                col_item->expr_,
-                                                                one_expr,
-                                                                add_expr))) {
+              ObSysFunRawExpr *request_expr = NULL;
+              if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_UUID_SHORT, request_expr))) {
               } else {
-                assignment.expr_ = add_expr;
+                request_expr->set_func_name(ObString("uuid_short"));
+                if (OB_FAIL(request_expr->formalize(session_info_))) {
+                } else {
+                  assignment.expr_ = request_expr;
+                }
               }
             } else if (column_schema->is_on_update_current_timestamp()) {
               assignment.column_expr_->set_result_flag(ON_UPDATE_NOW_FLAG);
@@ -850,24 +846,19 @@ int ObDelUpdResolver::check_need_assignment(const common::ObIArray<ObAssignment>
     const ObColumnSchemaV2 *owner_ai_column =
         get_ai_owner_by_status_column(table_schema, column.get_column_id());
     if (OB_ISNULL(owner_ai_column)) {
-      owner_ai_column = get_ai_owner_by_gen_column(table_schema, column.get_column_id());
-    }
-    if (OB_SUCC(ret) && OB_NOT_NULL(owner_ai_column)) {
-      if (T_INSERT_SCOPE == scope) {
-        need_assign = false;
-      } else {
-        bool owner_need_assign = false;
-        if (OB_FAIL(check_need_assignment(assigns,
-                                          table_id,
-                                          before_update_row_trigger_exist,
-                                          table_schema,
-                                          *owner_ai_column,
-                                          scope,
-                                          owner_need_assign))) {
-        } else {
-          need_assign = owner_need_assign;
+      // The generation is shared by every AI column in a row. Any dependency
+      // change must invalidate old requests, including changes used by only one column.
+      for (auto it = table_schema.column_begin(); OB_SUCC(ret) && !need_assign && it != table_schema.column_end(); ++it) {
+        const ObColumnSchemaV2 *candidate = *it;
+        if (candidate != nullptr && candidate->is_ai_column()
+            && candidate->get_ai_column_gen_column_id() == column.get_column_id() && T_INSERT_SCOPE != scope) {
+          ret = check_need_assignment(assigns, table_id, before_update_row_trigger_exist,
+                                      table_schema, *candidate, scope, need_assign);
         }
       }
+    } else if (T_INSERT_SCOPE != scope) {
+      ret = check_need_assignment(assigns, table_id, before_update_row_trigger_exist,
+                                  table_schema, *owner_ai_column, scope, need_assign);
     }
     if (OB_SUCC(ret) && !need_assign && column.is_generated_column()) {
       if (OB_FAIL(ObResolverUtils::check_whether_assigned(stmt, assigns, table_id, column.get_column_id(), exist))) {

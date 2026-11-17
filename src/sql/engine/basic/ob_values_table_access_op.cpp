@@ -19,6 +19,7 @@
 #include "sql/engine/basic/ob_values_table_access_op.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_obj_cast_runtime.h"
+#include "sql/resolver/dml/ob_file_sql_utils.h"
 
 namespace oceanbase
 {
@@ -32,12 +33,13 @@ OB_SERIALIZE_MEMBER_INHERIT(ObValuesTableAccessSpec,
                             value_exprs_,
                             start_param_idx_,
                             end_param_idx_,
-                            obj_params_);
+                            obj_params_,
+                            file_scan_descriptor_);
 
 ObValuesTableAccessOp::ObValuesTableAccessOp(ObExecContext &exec_ctx,
                                              const ObOpSpec &spec,
                                              ObOpInput *input)
-  : ObOperator(exec_ctx, spec, input), datum_caster_(), cm_(CM_NONE),
+  : ObOperator(exec_ctx, spec, input), file_(nullptr), datum_caster_(), cm_(CM_NONE),
     row_idx_(0), row_cnt_(0) {}
 
 int ObValuesTableAccessOp::inner_open()
@@ -50,6 +52,8 @@ int ObValuesTableAccessOp::inner_open()
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_UNLIKELY(MY_SPEC.column_exprs_.empty())) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (!MY_SPEC.file_scan_descriptor_.empty()) {
+    ret = restart_file();
   } else if (OB_FAIL(datum_caster_.init(eval_ctx_.exec_ctx_))) {
   } else if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false, 0, GET_MY_SESSION(ctx_), cm_))) {
   } else {
@@ -84,6 +88,8 @@ int ObValuesTableAccessOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_rescan())) {
+  } else if (file_ != nullptr) {
+    ret = restart_file();
   } else {
     row_idx_ = 0;
   }
@@ -94,6 +100,8 @@ int ObValuesTableAccessOp::switch_iterator()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_switch_iterator())) {
+  } else if (file_ != nullptr) {
+    ret = restart_file();
   } else {
     row_idx_ = 0;
   }
@@ -107,7 +115,7 @@ int ObValuesTableAccessOp::inner_get_next_row()
   } else {
     do {
       clear_evaluated_flag();
-      if (OB_FAIL(calc_next_row())) {
+      if (OB_FAIL(file_ == nullptr ? calc_next_row() : next_file_row())) {
         if(OB_ITER_END != ret) {
         }
       } else {
@@ -324,8 +332,68 @@ OB_INLINE int ObValuesTableAccessOp::calc_next_row()
   return ret;
 }
 
+int ObValuesTableAccessOp::restart_file()
+{
+  delete file_;
+  file_ = new (std::nothrow) ObFileSqlStream;
+  int ret = file_ == nullptr ? OB_ALLOCATE_MEMORY_FAILED : file_->start(MY_SPEC.file_scan_descriptor_);
+  for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_exprs_.count(); ++i) {
+    file_->select_column(i, MY_SPEC.column_exprs_.at(i) != nullptr);
+  }
+  return ret;
+}
+
+int ObValuesTableAccessOp::next_file_row()
+{
+  int ret = file_->next();
+  for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_exprs_.count(); ++i) {
+    if (MY_SPEC.column_exprs_.at(i) == nullptr) { continue; }
+    ObExpr &expr = *MY_SPEC.column_exprs_.at(i);
+    ObDatum &datum = expr.locate_datum_for_write(eval_ctx_);
+    ObFileSqlCell cell;
+    ObFileSqlType type;
+    if (OB_FAIL(file_->cell(i, type, cell))) {
+    } else if (cell.is_null_) {
+      datum.set_null();
+    } else if (type == FS_TYPE_BIGINT) {
+      datum.set_int(ObFileSqlValueType::parse_int_text(cell.text_.ptr(), cell.text_.length()));
+    } else if (type == FS_TYPE_BOOLEAN) {
+      datum.set_int(cell.text_.case_compare("true") == 0 || cell.text_.compare("1") == 0);
+    } else if (type == FS_TYPE_DOUBLE) {
+      datum.set_double(ObFileSqlValueType::parse_double_text(cell.text_.ptr(), cell.text_.length()));
+    } else if (type == FS_TYPE_DATE) {
+      ObMySQLDate value = 0;
+      if (OB_SUCC(ret = ObTimeConverter::str_to_mdate(cell.text_, value))) {
+        datum.set_mysql_date(value);
+      }
+    } else if (type == FS_TYPE_DATETIME) {
+      ObMySQLDateTime value = 0;
+      ObTimeConvertCtx time_context(nullptr, false);
+      if (OB_SUCC(ret = ObTimeConverter::str_to_mdatetime(cell.text_, time_context, value))) {
+        datum.set_mysql_datetime(value);
+      }
+    } else {
+      char *target = expr.get_str_res_mem(eval_ctx_, cell.text_.length());
+      if (target == nullptr && !cell.text_.empty()) { return OB_ALLOCATE_MEMORY_FAILED; }
+      if (!cell.text_.empty()) { MEMCPY(target, cell.text_.ptr(), cell.text_.length()); }
+      datum.set_string(target, cell.text_.length());
+    }
+    expr.set_evaluated_projected(eval_ctx_);
+  }
+  return ret;
+}
+
+void ObValuesTableAccessOp::destroy()
+{
+  delete file_;
+  file_ = nullptr;
+  ObOperator::destroy();
+}
+
 int ObValuesTableAccessOp::inner_close()
 {
+  delete file_;
+  file_ = nullptr;
   int ret = OB_SUCCESS;
   row_idx_ = 0;
   if (OB_FAIL(datum_caster_.destroy())) {

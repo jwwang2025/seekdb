@@ -3373,7 +3373,12 @@ bool ObSQLUtils::is_iter_uncommitted_row(ObExecContext *cur_ctx)
 
 bool ObSQLUtils::is_nested_sql(ObExecContext *cur_ctx)
 {
-  return is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx) || is_online_stat_gathering_nested_sql(cur_ctx);
+  // Explicit nested-session scopes also cover transaction-bound internal DML,
+  // such as AI task records. Their completion must preserve the outer statement.
+  const bool explicit_nested = cur_ctx != nullptr && cur_ctx->get_my_session() != nullptr
+      && cur_ctx->get_my_session()->is_nested_session();
+  return explicit_nested || is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx)
+      || is_online_stat_gathering_nested_sql(cur_ctx);
 }
 
 //bind current execute context to my session,

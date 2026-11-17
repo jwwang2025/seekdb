@@ -8258,9 +8258,11 @@ int ObDDLService::add_ai_column_hidden_columns_(
     gen_column.set_collation_type(CS_TYPE_BINARY);
     ObObj zero_value;
     zero_value.set_int(0);
+    ObObj request_default;
+    request_default.set_varchar("uuid_short()");
     if (OB_FAIL(gen_column.set_column_name("__ai_gen"))) {
     } else if (OB_FAIL(gen_column.set_orig_default_value(zero_value))) {
-    } else if (OB_FAIL(gen_column.set_cur_default_value(zero_value, false))) {
+    } else if (OB_FAIL(gen_column.set_cur_default_value(request_default, true))) {
     } else if (OB_FAIL(new_table_schema.add_column(gen_column))) {
     } else {
       new_table_schema.set_max_used_column_id(gen_column.get_column_id());
@@ -8301,6 +8303,21 @@ int ObDDLService::add_ai_column_hidden_columns_(
     } else if (OB_FAIL(ai_column.set_ai_column_gen_column_id(gen_column_id))) {
     } else if (OB_FAIL(ai_column.set_ai_column_status_column_id(
                          status_column.get_column_id()))) {
+    } else {
+      ObColumnSchemaV2 result_spec;
+      if (OB_FAIL(result_spec.assign(status_column))) { return ret; }
+      result_spec.set_column_id(new_table_schema.get_max_used_column_id() + 1);
+      status_name_pos = 0;
+      if (OB_FAIL(databuff_printf(status_name, sizeof(status_name), status_name_pos,
+                                  "__ai_result_spec_%lu", ai_column.get_column_id()))) {
+      } else if (OB_FAIL(result_spec.set_column_name(ObString(status_name_pos, status_name)))) {
+      } else if (OB_FAIL(new_table_schema.add_column(result_spec))) {
+      } else {
+        new_table_schema.set_max_used_column_id(result_spec.get_column_id());
+        if (update_inner_table) {
+          ret = ddl_operator->insert_single_column(*trans, new_table_schema, result_spec);
+        }
+      }
     }
   }
   return ret;
