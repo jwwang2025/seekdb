@@ -1,0 +1,9 @@
+set session ob_query_timeout = 10000000;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+ERROR HY000: This AI model 'startup_complete' was not found
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('startup_complete', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+ERROR HY000: This AI model 'startup_complete' was not found
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('startup_complete', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');

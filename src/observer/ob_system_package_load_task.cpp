@@ -55,7 +55,7 @@ int ObSystemPackageLoadTask::start(common::ObTimer &timer)
   } else {
     if (timer.task_exist(*this)) {
       // ignore duplicate schedule
-    } else if (OB_FAIL(timer.schedule(*this, SCHEDULE_INTERVAL_US, did_repeat))) {
+    } else if (OB_FAIL(timer.schedule(*this, SCHEDULE_INTERVAL_US, did_repeat, true /*immediate*/))) {
     } else {
       LOG_INFO("finish schedule timer task", K(SCHEDULE_INTERVAL_US));
     }
@@ -90,7 +90,9 @@ int ObSystemPackageLoadTask::load_system_package_()
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(GET_ADMIN_JOB_COUNT(LOAD_MYSQL_SYS_PACKAGE, job_count))) {
   } else if (0 == job_count) {
-    // job not exists, try insert inprogress job
+    // Create and execute the job in the same invocation. User CALL statements
+    // wait for these packages under their query deadline, so deferring the
+    // actual load until the next timer tick wastes another retry interval.
     if (OB_FAIL(ADMIN_JOB_CREATE_WITH_RET(job_id, JOB_TYPE_LOAD_MYSQL_SYS_PACKAGE))) {
     }
   } else if (OB_FAIL(ADMIN_JOB_FIND(LOAD_MYSQL_SYS_PACKAGE, job_id))) {
@@ -100,12 +102,15 @@ int ObSystemPackageLoadTask::load_system_package_()
       LOG_INFO("find a success job or job_id not exist", KR(ret), K(job_id));
     } else {
     }
-  } else if (OB_FAIL(pl::ObPLPackageManager::load_all_common_sys_package(
-                         *sql_proxy,
-                         false/*from_file*/))) {
-  } else if (OB_FAIL(ADMIN_JOB_COMPLETE(job_id, 0/*result_code*/))) {
-  } else {
-    GCTX.sys_package_ready_ = true;
+  }
+  if (OB_SUCC(ret) && !GCTX.sys_package_ready_) {
+    if (OB_FAIL(pl::ObPLPackageManager::load_all_common_sys_package(
+                           *sql_proxy,
+                           false/*from_file*/))) {
+    } else if (OB_FAIL(ADMIN_JOB_COMPLETE(job_id, 0/*result_code*/))) {
+    } else {
+      GCTX.sys_package_ready_ = true;
+    }
   }
   return ret;
 }

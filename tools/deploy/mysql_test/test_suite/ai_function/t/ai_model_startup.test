@@ -1,0 +1,13 @@
+# Run first on a freshly initialized server to cover asynchronous package loading.
+# Keep the platform's 10-second query deadline, including the first CALL.
+connection default;
+set session ob_query_timeout = 10000000;
+--error 11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('startup_complete', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+--error 11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
+# Recreating the same name checks that the successful DROP was published.
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('startup_complete', '{"type":"completion","model_name":"mock"}');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('startup_complete');
