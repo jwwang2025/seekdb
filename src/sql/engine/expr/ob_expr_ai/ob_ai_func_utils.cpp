@@ -1777,8 +1777,11 @@ int ObAIFuncPromptObjectUtils::replace_all_str_args_in_template(ObIAllocator &al
     }
     // second pass: fill the result buffer
     char *result_buf = NULL;
-    if (OB_FAIL(ret)) {
-    } else if (OB_ISNULL(result_buf = static_cast<char *>(allocator.alloc(result_len > 0 ? result_len : 1)))) {
+      if (OB_FAIL(ret)) {
+      } else if (result_len > INT32_MAX) {
+        // ObString::assign_ptr stores a signed 32-bit length.
+        ret = OB_SIZE_OVERFLOW;
+      } else if (OB_ISNULL(result_buf = static_cast<char *>(allocator.alloc(result_len > 0 ? result_len : 1)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
     } else {
       int64_t result_pos = 0;
