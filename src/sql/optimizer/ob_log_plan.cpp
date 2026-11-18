@@ -12041,6 +12041,42 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
     ObTextRetrievalInfo &tr_info = table_scan->get_text_retrieval_info();
     tr_info.match_expr_ = match_against;
     tr_info.pushdown_match_filter_ = match_pred;
+    // A positive natural-language membership predicate does not consume BM25.
+    // Keep ranking for LIMIT (including its implicit relevance ordering), and
+    // whenever any other expression can observe the score. Restrict this to a
+    // single base-table SELECT; lookup/index-merge paths retain their defaults.
+    const ObDMLStmt *stmt = get_stmt();
+    if (!table_scan->get_index_back()
+        && stmt->is_select_stmt() && !stmt->has_limit() && !stmt->has_order_by()
+        && !stmt->has_subquery() && !stmt->is_set_stmt()
+        && stmt->get_table_items().count() == 1
+        && stmt->get_table_items().at(0)->is_basic_table()
+        && match_against->get_mode_flag() == NATURAL_LANGUAGE_MODE
+        && match_against->get_columns_boosts().empty()
+        && match_pred->get_expr_type() == T_OP_BOOL
+        && match_pred->get_param_count() == 1
+        && match_pred->get_param_expr(0) == match_against) {
+      ObSEArray<ObRawExpr *, 16> relation_exprs;
+      bool score_observed = false;
+      ObStmtExprGetter visitor;
+      visitor.set_relation_scope();
+      visitor.remove_scope(SCOPE_WHERE);
+      if (OB_FAIL(stmt->get_relation_exprs(relation_exprs, visitor))) {
+        LOG_WARN("failed to collect expressions for text retrieval", K(ret));
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && !score_observed && i < relation_exprs.count(); ++i) {
+        score_observed = relation_exprs.at(i)->has_flag(CNT_MATCH_EXPR);
+      }
+      const ObIArray<ObRawExpr *> &conditions = stmt->get_condition_exprs();
+      for (int64_t i = 0; OB_SUCC(ret) && !score_observed && i < conditions.count(); ++i) {
+        const ObRawExpr *expr = conditions.at(i);
+        score_observed = expr != match_pred && expr->has_flag(CNT_MATCH_EXPR);
+      }
+      if (OB_SUCC(ret) && !score_observed) {
+        tr_info.need_calc_relevance_ = false;
+        tr_info.pushdown_match_filter_ = nullptr;
+      }
+    }
     // The mapping table is absent when the data-table rowkey is used as the document ID.
     table_scan->set_doc_id_index_table_id(tr_info.doc_id_idx_tid_);
     if (table_scan->is_vec_adaptive_scan() || table_scan->is_vec_idx_scan_post_filter()) {

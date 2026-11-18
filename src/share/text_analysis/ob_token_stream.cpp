@@ -295,8 +295,32 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
       ObString norm_lower_token;
-      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
-      } else {
+      bool ascii_only = cs_->number == CS_TYPE_UTF8MB4_GENERAL_CI
+                        || cs_->number == CS_TYPE_UTF8MB4_BIN;
+      bool has_upper = false;
+      for (uint32_t i = 0; ascii_only && i < norm_token_len; ++i) {
+        const unsigned char c = static_cast<unsigned char>(norm_token_ptr[i]);
+        ascii_only = c < 0x80;
+        has_upper = has_upper || (c >= 'A' && c <= 'Z');
+      }
+      // The input stream owns these bytes until its next get_next call, the
+      // same lifetime as the normalizer's reusable output buffer.
+      if (ascii_only && !has_upper) {
+        norm_lower_token = norm_alnum_token;
+      } else if (ascii_only) {
+        char *lower = static_cast<char *>(norm_allocator_.alloc(norm_token_len));
+        if (OB_ISNULL(lower)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          for (uint32_t i = 0; i < norm_token_len; ++i) {
+            const unsigned char c = static_cast<unsigned char>(norm_token_ptr[i]);
+            lower[i] = (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+          }
+          norm_lower_token.assign_ptr(lower, norm_token_len);
+        }
+      } else if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+      }
+      if (OB_SUCC(ret)) {
         next_token.set_string(norm_lower_token);
       }
     }

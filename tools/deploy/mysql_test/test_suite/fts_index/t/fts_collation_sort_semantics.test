@@ -1,0 +1,28 @@
+--disable_warnings
+drop table if exists fts_sort_strings;
+--enable_warnings
+set names utf8mb4;
+create table fts_sort_strings(id int primary key, v varchar(256) collate utf8mb4_general_ci, c char(64) collate utf8mb4_general_ci);
+insert into fts_sort_strings(id,v) values
+(1,NULL),(2,''),(3,' '),(4,'a'),(5,'A'),(6,'a '),(7,'á'),(8,'ä'),
+(9,'database'),(10,'database'),(11,'DATABASE'),(12,'Database '),
+(13,'中文'),(14,'中文'),(15,'中问'),(16,'数据库'),(17,'数据库'),
+(18,'ß'),(19,'ss'),(20,'İ'),(21,'i'),(22,'😀'),(23,'😁'),
+(24,concat('a',char(0),'b')),(25,concat('a',char(0),'b')),(26,'Ω');
+update fts_sort_strings set c=v;
+# Include a tie-breaker so collation-equivalent rows have a deterministic order.
+select id, hex(v) from fts_sort_strings order by v, id;
+select id, hex(v) from fts_sort_strings order by v desc, id desc;
+select id, hex(c) from fts_sort_strings order by c, id;
+# Force the encoded sort used by FTS backfill, including embedded NUL bytes.
+select /*+ opt_param('enable_newsort','true') */ id, hex(v) from fts_sort_strings order by v, id;
+select /*+ opt_param('enable_newsort','true') */ id, hex(v) from fts_sort_strings order by v desc, id desc;
+select /*+ opt_param('enable_newsort','true') */ id, hex(c) from fts_sort_strings order by c, id;
+select min(id),count(*) from fts_sort_strings group by v order by min(id);
+select count(distinct v),count(distinct c) from fts_sort_strings;
+# Exhaustive pair comparisons exercise both identical and unequal bytes.
+select l.id,r.id,l.v=r.v as eq,l.v<r.v as lt,l.v>r.v as gt
+from fts_sort_strings l cross join fts_sort_strings r order by l.id,r.id;
+select l.id,r.id,l.c=r.c as eq,l.c<r.c as lt,l.c>r.c as gt
+from fts_sort_strings l cross join fts_sort_strings r order by l.id,r.id;
+drop table fts_sort_strings;

@@ -1,0 +1,83 @@
+--disable_warnings
+drop database if exists fts_membership;
+create database fts_membership;
+--enable_warnings
+use fts_membership;
+create table docs(id int primary key, body text, fulltext index ft(body) with parser beng);
+insert into docs values
+(1,'database performance audit'),(2,'database database database'),
+(3,'performance audit audit'),(4,'storage engine'),(5,''),(6,NULL),
+(7,'the and a'),(8,'audit database performance storage engine'),
+(9,'performance'),(10,'databases');
+# Unranked membership, deduplication, stop words, and empty posting lists.
+select count(*) from docs where match(body) against('database performance audit');
+select count(*) from docs where match(body) against('database database audit');
+select count(*), sum(id), group_concat(id order by id) from docs where match(body) against('database performance audit');
+select count(*), sum(id) from docs where match(body) against('database database audit') and id > 2;
+select count(*) from docs where match(body) against('absenttoken');
+select count(*) from docs where match(body) against('the and a');
+select count(*) from docs where match(body) against('');
+select count(*) from docs where match(body) against(NULL);
+select match(body) against('database') is true as found from docs where match(body) against('database');
+# More than 256 unique terms exercises the term-at-a-time fallback.
+set @long_query='database audit qaaa qaab qaac qaad qaae qaaf qaag qaah qaai qaaj qaak qaal qaam qaan qaao qaap qaaq qaar qaas qaat qaau qaav qaaw qaax qaay qaaz qaba qabb qabc qabd qabe qabf qabg qabh qabi qabj qabk qabl qabm qabn qabo qabp qabq qabr qabs qabt qabu qabv qabw qabx qaby qabz qaca qacb qacc qacd qace qacf qacg qach qaci qacj qack qacl qacm qacn qaco qacp qacq qacr qacs qact qacu qacv qacw qacx qacy qacz qada qadb qadc qadd qade qadf qadg qadh qadi qadj qadk qadl qadm qadn qado qadp qadq qadr qads qadt qadu qadv qadw qadx qady qadz qaea qaeb qaec qaed qaee qaef qaeg qaeh qaei qaej qaek qael qaem qaen qaeo qaep qaeq qaer qaes qaet qaeu qaev qaew qaex qaey qaez qafa qafb qafc qafd qafe qaff qafg qafh qafi qafj qafk qafl qafm qafn qafo qafp qafq qafr qafs qaft qafu qafv qafw qafx qafy qafz qaga qagb qagc qagd qage qagf qagg qagh qagi qagj qagk qagl qagm qagn qago qagp qagq qagr qags qagt qagu qagv qagw qagx qagy qagz qaha qahb qahc qahd qahe qahf qahg qahh qahi qahj qahk qahl qahm qahn qaho qahp qahq qahr qahs qaht qahu qahv qahw qahx qahy qahz qaia qaib qaic qaid qaie qaif qaig qaih qaii qaij qaik qail qaim qain qaio qaip qaiq qair qais qait qaiu qaiv qaiw qaix qaiy qaiz qaja qajb qajc qajd qaje qajf qajg qajh qaji qajj qajk qajl qajm qajn qajo qajp qajq qajr qajs qajt qaju qajv qajw qajx qajy qajz qaka qakb qakc qakd qake qakf qakg qakh qaki qakj qakk qakl qakm qakn qako qakp qakq qakr qaks qakt qaku qakv qakw qakx qaky qakz qala qalb qalc qald qale qalf qalg qalh qali qalj qalk qall qalm qaln';
+prepare long_p from 'select count(*) from docs where match(body) against(?)';
+execute long_p using @long_query;
+deallocate prepare long_p;
+# Score consumers must retain BM25, including predicates and nested expressions.
+select id, round(match(body) against('database performance audit'), 8) score from docs where match(body) against('database performance audit') order by id;
+select round(sum(match(body) against('database performance audit')), 8) from docs where match(body) against('database performance audit');
+select count(*) from docs where match(body) against('database performance audit') > 0.5;
+select count(*) from docs where match(body) against('database performance audit') and match(body) against('database performance audit') > 0.5;
+select count(*) from docs where match(body) against('database performance audit') or id = 4;
+select id from docs where match(body) against('database performance audit') order by match(body) against('database performance audit') desc, id limit 3;
+# Implicit relevance ordering under LIMIT remains unchanged.
+select group_concat(id order by id) from (select id from docs where match(body) against('database performance audit') limit 3) ranked;
+select count(*) from docs where match(body) against('+database -audit' in boolean mode);
+select count(*) from docs a join docs b on a.id=b.id where match(a.body) against('database performance audit');
+# Cached parameterized predicates cannot treat a nonzero threshold as membership.
+prepare p from 'select count(*) from docs where match(body) against(?) > ?';
+set @q='database performance audit', @threshold=0;
+execute p using @q, @threshold;
+set @threshold=0.5;
+execute p using @q, @threshold;
+set @threshold=100;
+execute p using @q, @threshold;
+deallocate prepare p;
+prepare p from 'select count(*) from docs where match(body) against(?)';
+set @q='database audit';
+execute p using @q;
+set @q='storage';
+execute p using @q;
+set @q='absenttoken';
+execute p using @q;
+deallocate prepare p;
+prepare p from 'select count(*), sum(id) from docs where match(body) against(?)';
+set @q='database';
+execute p using @q;
+set @q='storage';
+execute p using @q;
+set @q='absenttoken';
+execute p using @q;
+deallocate prepare p;
+delete from docs where id=1;
+update docs set body='database audit' where id=4;
+insert into docs values(11,'performance audit');
+select count(*), sum(id), group_concat(id order by id) from docs where match(body) against('database performance audit');
+select count(*) from docs where match(body) against('database performance audit');
+begin;
+delete from docs where id=2;
+select count(*) from docs where match(body) against('database performance audit');
+rollback;
+select count(*) from docs where match(body) against('database performance audit');
+create table heap_docs(body text, fulltext index ft(body) with parser beng);
+insert into heap_docs select body from docs;
+select count(*) from heap_docs where match(body) against('database performance audit');
+select count(*) from heap_docs where match(body) against('absenttoken');
+create table empty_docs(id int primary key, body text, fulltext index ft(body) with parser beng);
+select count(*) from empty_docs where match(body) against('database');
+select count(*) from empty_docs where match(body) against('');
+insert into empty_docs values(1,NULL),(2,''),(3,'the and a');
+select count(*) from empty_docs where match(body) against('database');
+select count(*) from empty_docs where match(body) against('the and a');
+drop database fts_membership;

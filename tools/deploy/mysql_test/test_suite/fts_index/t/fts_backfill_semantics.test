@@ -1,0 +1,33 @@
+--disable_warnings
+drop database if exists fts_backfill;
+create database fts_backfill;
+--enable_warnings
+use fts_backfill;
+create table docs(id int primary key, body text, cn text) default charset=utf8mb4;
+insert into docs values
+(1,'Database database DATABASE','数据库 性能 优化'),
+(2,'performance audit database','全文索引 数据库 性能'),
+(3,'café cafe CAFÉ café','中文 测试 测试'),
+(4,'resume résumé naïve','倒排索引 tokenizer'),
+(5,'',''),(6,NULL,NULL),(7,'the and a','的 和'),
+(8,'audit storage engine','数据库 存储 引擎'),
+(9,'database performance audit','数据库 全文索引'),
+(10,'DATABASE audit','性能 优化 测试');
+# Build on existing rows; these exercise the DDL sort and stored posting lists.
+create fulltext index beng_ft on docs(body) with parser beng;
+create fulltext index ik_ft on docs(cn) with parser ik;
+select count(*), sum(id) from docs where match(body) against('database performance audit');
+select id, round(match(body) against('database performance audit'), 8) score from docs where match(body) against('database performance audit') order by id;
+select id, round(match(body) against('cafe café'), 8) score from docs where match(body) against('cafe café') order by id;
+select count(*), sum(id) from docs where match(cn) against('数据库 性能');
+select id, round(match(cn) against('数据库 全文索引'), 8) score from docs where match(cn) against('数据库 全文索引') order by id;
+insert into docs values(11,'database audit café','数据库 性能');
+update docs set body='storage database',cn='存储 引擎' where id=3;
+delete from docs where id=9;
+select count(*), sum(id) from docs where match(body) against('database audit');
+select id, round(match(cn) against('数据库 性能'), 8) score from docs where match(cn) against('数据库 性能') order by id;
+create table binary_docs(id varbinary(16) primary key, body text collate utf8mb4_bin);
+insert into binary_docs values(x'00','database audit'),(x'0001','Database Audit'),(x'ff','café cafe'),(x'7fff','storage database');
+create fulltext index ft on binary_docs(body) with parser beng;
+select hex(id), round(match(body) against('database audit'), 8) score from binary_docs where match(body) against('database audit') order by id;
+drop database fts_backfill;

@@ -171,6 +171,11 @@ struct ObNullSafeDatumStrCmp
       cmp_ret = NULL_FIRST ? -1 : 1;
     } else if (OB_UNLIKELY(r.is_null())) {
       cmp_ret = NULL_FIRST ? 1 : -1;
+    } else if (CS_TYPE == CS_TYPE_UTF8MB4_GENERAL_CI && l.len_ == r.len_
+               && (0 == l.len_ || l.ptr_ == r.ptr_ || 0 == MEMCMP(l.ptr_, r.ptr_, l.len_))) {
+      // Repeated sort keys need no Unicode decoding. Byte equality implies
+      // collation equality; unequal bytes still require the collation rules.
+      cmp_ret = 0;
     } else {
       ret = datum_cmp::ObDatumStrCmp<CS_TYPE, WITH_END_SPACE>::cmp(l, r, cmp_ret);
     }

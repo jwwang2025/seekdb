@@ -218,7 +218,7 @@ int ObSRTaaTIterImpl::init_chunk_stores()
         ret = OB_ALLOCATE_MEMORY_FAILED;
       } else {
         ObSRTaaTHashMap *hash_map = new (buf) ObSRTaaTHashMap();
-        if (OB_FAIL(hash_map->create(10, common::ObMemAttr("FTTaatMap")))) {
+        if (OB_FAIL(hash_map->create(OB_HASHMAP_DEFAULT_SIZE, common::ObMemAttr("FTTaatMap")))) {
         } else {
           hash_maps_[i] = hash_map;
         }
@@ -406,6 +406,9 @@ int ObSRTaaTIterImpl::load_next_hash_map()
           }
         } else {
           if (OB_FAIL(map->set_refactored(id, 1.0, 0 /* overwrite */))) {
+            if (OB_HASH_EXIST == ret) {
+              ret = OB_SUCCESS; // A document may occur in several token lists.
+            }
           }
         }
       }

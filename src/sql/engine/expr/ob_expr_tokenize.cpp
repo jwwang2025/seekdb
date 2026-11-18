@@ -375,6 +375,11 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
+  // The parser helper already supplies the default properties. Preserve the
+  // empty representation instead of building, serializing and reparsing JSON.
+  if (properties.empty()) {
+    return ret;
+  }
   storage::ObFTParserJsonProps parser_properties;
 
   if (OB_FAIL(parser_properties.init())) {

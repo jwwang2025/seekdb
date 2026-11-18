@@ -45,6 +45,7 @@
 #include "rootserver/ddl_task/ob_ddl_task.h"
 #include "rootserver/ob_index_builder.h"
 #include "lib/worker.h"
+#include "data_plane/ob_order_perserving_encoder.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -529,13 +530,33 @@ int ObDDLTaskUtil::generate_build_replica_sql(const int64_t data_table_id,
           }
         }
         const char *io_read_hint = " ";
+        // FTS backfill repeatedly compares the same token prefixes. Encode
+        // supported keys once per row instead of decoding them on every sort
+        // comparison. Keep the existing DDL policy for other index types.
+        bool encode_fts_keys = dest_table_schema->is_fts_index_aux() && !use_heap_table_ddl_plan;
+        const ObRowkeyInfo &key_info = dest_table_schema->get_rowkey_info();
+        for (int64_t i = 0; encode_fts_keys && i < key_info.get_size(); ++i) {
+          uint64_t column_id = OB_INVALID_ID;
+          const ObColumnSchemaV2 *column = OB_SUCCESS == key_info.get_column_id(i, column_id)
+                                         ? dest_table_schema->get_column_schema(column_id) : nullptr;
+          if (nullptr == column) {
+            encode_fts_keys = false;
+          } else {
+            // The encoder implements VARCHAR and CHAR with the same supported
+            // collations; VARCHAR explicitly disables CHAR padding.
+            const ObObjType type = column->get_data_type() == ObVarcharType
+                                   ? ObCharType : column->get_data_type();
+            encode_fts_keys = ObOrderPerservingEncoder::can_encode_sortkey(type, column->get_collation_type());
+          }
+        }
         if (dest_table_schema->is_vec_vid_rowkey_type()) {
           src_table_schema_version_hint_sql_string.reset();
         }
         if (OB_FAIL(ret)) {
         } else {
-          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', 'false') %.*s use_px */INTO `%.*s`.`%.*s` %.*s(%.*s) SELECT /*+ index(`%.*s` primary) %.*s */ %.*s from `%.*s`.`%.*s` %.*s as of snapshot %ld %.*s",
+          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', '%s') %.*s use_px */INTO `%.*s`.`%.*s` %.*s(%.*s) SELECT /*+ index(`%.*s` primary) %.*s */ %.*s from `%.*s`.`%.*s` %.*s as of snapshot %ld %.*s",
               real_parallelism, execution_id, task_id,
+              encode_fts_keys ? "true" : "false",
               static_cast<int>(strlen(io_read_hint)), io_read_hint,
               static_cast<int>(new_dest_database_name.length()), new_dest_database_name.ptr(), static_cast<int>(new_dest_table_name.length()), new_dest_table_name.ptr(),
               static_cast<int>(partition_names.length()), partition_names.ptr(),
