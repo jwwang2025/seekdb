@@ -1,5 +1,9 @@
 # Full-text tuning: measured unified candidate
 
+This report describes the previously tested v3 candidate, commit
+`1705c0a5524ca6819a3b28e31065f9c78ef3287a`. The subsequent, untested changes
+are documented separately in [the v4 submission note](fts_followup_v4.md).
+
 ## Result and scoring limitation
 
 The previous platform submission `bb38260de42f156e94c9dd9e0eae92f82de58f1f`

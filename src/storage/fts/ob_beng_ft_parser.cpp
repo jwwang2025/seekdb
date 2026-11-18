@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX STORAGE_FTS
 
+#include <cstdint>
 #include "storage/fts/ob_beng_ft_parser.h"
 #include "data_plane/fts/ob_fts_struct.h"
 
@@ -49,15 +50,27 @@ int ObBEngFTParser::get_next_token(
     }
   } else if (OB_ISNULL(token.ptr_) || OB_UNLIKELY(0 >= token.len_ || 0 >= token_freq)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    MEMCPY(buf, token.ptr_, token.len_);
-    word = buf;
-    word_len = token.len_;
-    char_len = token.len_;
-    word_freq = token_freq;
-    LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+    const std::uintptr_t token_addr = reinterpret_cast<std::uintptr_t>(token.ptr_);
+    const std::uintptr_t doc_addr = reinterpret_cast<std::uintptr_t>(doc_.ptr_);
+    // Unchanged normalized tokens already reference the caller-owned document,
+    // which outlives the parser and its word map. Transformed tokens still need
+    // a copy because the normalizer reuses its buffer at the next token.
+    if (token_addr >= doc_addr && token_addr - doc_addr <= doc_.len_
+        && token.len_ <= doc_.len_ - (token_addr - doc_addr)) {
+      word = token.ptr_;
+    } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(buf, token.ptr_, token.len_);
+      word = buf;
+    }
+    if (OB_SUCC(ret)) {
+      word_len = token.len_;
+      char_len = token.len_;
+      word_freq = token_freq;
+      LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+    }
   }
   return ret;
 }

@@ -167,7 +167,8 @@ template <typename DataType = void>
 class ObFTDATReader
 {
 public:
-  ObFTDATReader(ObFTDAT *dat) : dat_(dat) {}
+  ObFTDATReader(ObFTDAT *dat)
+      : dat_(dat), cached_word_(), cached_code_(0), cached_lookup_ret_(OB_NOT_INIT) {}
 
   // Match single word with hit.
   int match_with_hit(const ObString &single_word,
@@ -176,6 +177,12 @@ public:
 
 private:
   ObFTDAT *dat_;
+  // Each reader belongs to a parser-local ObFTCacheDict. IK extends several
+  // active prefixes with the same input character; share that character's
+  // code lookup, but still perform every trie transition independently.
+  mutable ObFTSingleWord cached_word_;
+  mutable ObFTWordCode cached_code_;
+  mutable int cached_lookup_ret_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTDATReader);

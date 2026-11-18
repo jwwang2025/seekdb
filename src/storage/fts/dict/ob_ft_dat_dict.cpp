@@ -259,8 +259,21 @@ int ObFTDATReader<DATA_TYPE>::match_with_hit(const ObString &ft_char,
   int32_t *check = reinterpret_cast<int32_t *>(dat_->buff + dat_->check_offset_);
 
   ObFTSingleWord word;
-  word.set_word(ft_char.ptr(), ft_char.length());
-  if (OB_FAIL(dat_->get_map()->find(word, code)) && OB_ENTRY_NOT_EXIST != ret) {
+  if (OB_FAIL(word.set_word(ft_char.ptr(), ft_char.length()))) {
+    return ret;
+  } else if ((cached_lookup_ret_ == OB_SUCCESS || cached_lookup_ret_ == OB_ENTRY_NOT_EXIST)
+             && cached_word_ == word) {
+    ret = cached_lookup_ret_;
+    code = cached_code_;
+  } else {
+    ret = map->find(word, code);
+    if (ret == OB_SUCCESS || ret == OB_ENTRY_NOT_EXIST) {
+      cached_word_ = word;
+      cached_lookup_ret_ = ret;
+      cached_code_ = ret == OB_SUCCESS ? code : 0;
+    }
+  }
+  if (OB_FAIL(ret) && OB_ENTRY_NOT_EXIST != ret) {
   } else if (OB_ENTRY_NOT_EXIST == ret) {
     ret = OB_SUCCESS;
     hit.set_unmatch();
